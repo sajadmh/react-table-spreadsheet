@@ -6,20 +6,6 @@ A tiny package to give your native HTML tables spreadsheet-style selection, copy
 - `dom`: the framework-agnostic enhancer for real `<table>` markup.
 - `react`: a thin React `<table>` wrapper plus a hook for existing table refs.
 
-## For non-developers
-
-Enhance any table across the web without installing anything by using a bookmarklet.
-
-1. Create a new bookmark in your browser.
-2. Name it `Table Steroids`.
-3. Paste this into the bookmark URL or location field:
-
-```text
-javascript:(()=>{const d=document;if(!d)return;const toastId="table-steroids-bookmarklet-toast";const root=d.body||d.documentElement;const existing=d.getElementById(toastId);if(existing){const timeoutId=Number(existing.getAttribute("data-timeout-id")||"0");if(timeoutId){clearTimeout(timeoutId);}existing.remove();}const toast=d.createElement("div");toast.id=toastId;toast.textContent="Enabling table steroids...";toast.setAttribute("role","status");toast.setAttribute("aria-live","polite");toast.style.position="fixed";toast.style.top="16px";toast.style.left="50%";toast.style.transform="translateX(-50%)";toast.style.padding="10px 14px";toast.style.borderRadius="10px";toast.style.background="rgba(17,24,39,0.92)";toast.style.color="#fff";toast.style.font="500 14px/1.4 system-ui,sans-serif";toast.style.boxShadow="0 10px 30px rgba(0,0,0,0.2)";toast.style.zIndex="2147483647";toast.style.pointerEvents="none";toast.style.maxWidth="calc(100vw - 32px)";toast.style.whiteSpace="nowrap";toast.style.textOverflow="ellipsis";toast.style.overflow="hidden";root.appendChild(toast);const timeoutId=setTimeout(()=>{toast.remove();},5000);toast.setAttribute("data-timeout-id",String(timeoutId));const s=d.createElement("script");s.onerror=()=>{toast.textContent="Failed to load table steroids";};s.src="https://cdn.jsdelivr.net/npm/table-steroids/dist/bookmarklet-loader.js";s.async=true;(d.head||d.documentElement).appendChild(s);})();
-```
-
-Use the latest published build with that bookmarklet. For a self-contained local or unpublished build, copy the single line from [`dist/bookmarklet.inline.txt`](./dist/bookmarklet.inline.txt) into the bookmark URL instead.
-
 ## For app developers
 
 ```bash
@@ -64,6 +50,24 @@ import { enhanceTable, enhanceTables } from "table-steroids";
 enhanceTable(document.querySelector("table")!);
 enhanceTables(document);
 ```
+
+## For non-developers
+
+Enhance any table across the web without installing anything by using a bookmarklet.
+
+<!-- bookmarklet-buttons:start -->
+Most README renderers disable `javascript:` bookmarklet links, so create the bookmark manually:
+
+1. Create a new bookmark in your browser.
+2. Name it `Table Steroids`.
+3. Paste this into the bookmark URL or location field:
+
+```text
+javascript:(()=>{const d=document;if(!d)return;const toastId="table-steroids-bookmarklet-toast";const root=d.body||d.documentElement;const existing=d.getElementById(toastId);if(existing){const timeoutId=Number(existing.getAttribute("data-timeout-id")||"0");if(timeoutId){clearTimeout(timeoutId);}existing.remove();}const toast=d.createElement("div");toast.id=toastId;toast.textContent="Enabling table steroids...";toast.setAttribute("role","status");toast.setAttribute("aria-live","polite");toast.style.position="fixed";toast.style.top="16px";toast.style.left="50%";toast.style.transform="translateX(-50%)";toast.style.padding="10px 14px";toast.style.borderRadius="10px";toast.style.background="rgba(17,24,39,0.92)";toast.style.color="#fff";toast.style.font="500 14px/1.4 system-ui,sans-serif";toast.style.boxShadow="0 10px 30px rgba(0,0,0,0.2)";toast.style.zIndex="2147483647";toast.style.pointerEvents="none";toast.style.maxWidth="calc(100vw - 32px)";toast.style.whiteSpace="nowrap";toast.style.textOverflow="ellipsis";toast.style.overflow="hidden";root.appendChild(toast);const timeoutId=setTimeout(()=>{toast.remove();},5000);toast.setAttribute("data-timeout-id",String(timeoutId));const s=d.createElement("script");s.onerror=()=>{toast.textContent="Failed to load table steroids";};s.src="https://cdn.jsdelivr.net/npm/table-steroids/dist/bookmarklet-loader.js";s.async=true;(d.head||d.documentElement).appendChild(s);})();
+```
+
+Use the latest published build with that bookmarklet. For a self-contained local or unpublished build, copy the single line from [`dist/bookmarklet.inline.txt`](./dist/bookmarklet.inline.txt) into the bookmark URL instead.
+<!-- bookmarklet-buttons:end -->
 
 ## Accessibility contract
 
