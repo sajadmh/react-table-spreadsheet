@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "noEmit": false,
+    "emitDeclarationOnly": false
+  },
+  "include": [
+    "./browser-runtime.ts",
+    "./core.ts",
+    "./dom.ts",
+    "./react.ts",
+    "./index.ts",
+    "./core/**/*.ts",
+    "./dom/**/*.ts",
+    "./react/**/*.ts",
+    "./react/**/*.tsx",
+    "./types/**/*.d.ts"
+  ],
+  "exclude": [
+    "dist",
+    "tests"
+  ]
+}
