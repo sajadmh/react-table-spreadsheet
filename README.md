@@ -55,7 +55,7 @@ enhanceTables(document);
 
 Enhance any table across the web without installing anything by using a bookmarklet.
 
-<!-- bookmarklet-buttons:start -->
+[Visit this page](http://localhost:9001/2026/table#for-everyone) to drag and drop the bookmarklet onto your bookmarks bar.
 
 1. Create a new bookmark in your browser.
 2. Name it `Table Steroids`.
@@ -65,7 +65,6 @@ That bookmarklet tries the latest published build first, then falls back to the 
 It should report `latest version` when the CDN loader runs and show a linked `offline version` label with the bundled version when it falls back.
 The generated bookmarklet file lives in the repository so app developers using `npm i table-steroids` do not download the full bookmarklet text payload.
 If both the external loader and the embedded fallback are blocked, the bookmarklet will show `Script not allowed.`.
-<!-- bookmarklet-buttons:end -->
 
 ## Accessibility contract
 

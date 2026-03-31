@@ -6,7 +6,6 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const distDir = path.join(rootDir, "dist");
 const packageJson = JSON.parse(readFileSync(path.join(rootDir, "package.json"), "utf8"));
 const versionTag = `v${packageJson.version}`;
-const repositoryUrl = normalizeRepositoryUrl(packageJson.repository?.url ?? "");
 
 const browserBundle = buildBundle(path.join(distDir, "browser-runtime.js"));
 const bookmarkletLoader = `${browserBundle};${buildBookmarkletLoaderRuntime(versionTag)}\n`;
@@ -22,7 +21,6 @@ const bookmarklet = buildBookmarklet(
 writeFileSync(path.join(distDir, "bookmarklet.txt"), `${bookmarklet}\n`, "utf8");
 rmSync(path.join(distDir, "bookmarklet.inline.txt"), { force: true });
 rmSync(path.join(distDir, "bookmarklet.github.txt"), { force: true });
-updateReadmeBookmarkletSection({ repositoryUrl });
 
 function buildBundle(entryPath) {
   const modules = new Map();
@@ -122,40 +120,4 @@ function flattenJavaScript(source) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .join("");
-}
-
-function normalizeRepositoryUrl(repositoryUrl) {
-  return repositoryUrl.replace(/^git\+/, "").replace(/\.git$/, "");
-}
-
-function updateReadmeBookmarkletSection({ repositoryUrl }) {
-  const readmePath = path.join(rootDir, "README.md");
-  const startMarker = "<!-- bookmarklet-buttons:start -->";
-  const endMarker = "<!-- bookmarklet-buttons:end -->";
-  const readme = readFileSync(readmePath, "utf8");
-  const startIndex = readme.indexOf(startMarker);
-  const endIndex = readme.indexOf(endMarker);
-  const bookmarkletUrl = `${repositoryUrl}/blob/main/dist/bookmarklet.txt`;
-
-  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
-    throw new Error("README.md is missing bookmarklet button markers.");
-  }
-
-  const section = [
-    "",
-    "1. Create a new bookmark in your browser.",
-    "2. Name it `Table Steroids`.",
-    `3. Open [\`dist/bookmarklet.txt\`](${bookmarkletUrl}) and copy its contents into the bookmark URL or location field.`,
-    "",
-    "That bookmarklet tries the latest published build first, then falls back to the embedded build if the page blocks external scripts.",
-    "It should report `latest version` when the CDN loader runs and show a linked `offline version` label with the bundled version when it falls back.",
-    "The generated bookmarklet file lives in the repository so app developers using `npm i table-steroids` do not download the full bookmarklet text payload.",
-    "If both the external loader and the embedded fallback are blocked, the bookmarklet will show `Script not allowed.`.",
-  ].join("\n");
-
-  const nextReadme = `${readme.slice(0, startIndex + startMarker.length)}\n${section}\n${readme.slice(endIndex)}`;
-
-  if (nextReadme !== readme) {
-    writeFileSync(readmePath, nextReadme, "utf8");
-  }
 }
