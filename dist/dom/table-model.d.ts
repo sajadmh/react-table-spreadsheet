@@ -15,8 +15,11 @@ export interface DOMTableModel {
     cellByCoordinate: Map<string, DOMTableCell>;
     copyValueByCoordinate: Map<string, string>;
 }
+export type DOMTableSelectionScope = "all" | "tbody";
 export interface BuildDOMTableModelOptions {
     getCellText?: (cell: HTMLTableCellElement) => string;
+    selectionScope?: DOMTableSelectionScope;
+    isSelectableCell?: (cell: HTMLTableCellElement) => boolean;
 }
 /**
  * Builds a stable map key for one logical table coordinate.

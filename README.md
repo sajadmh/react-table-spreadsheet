@@ -4,7 +4,7 @@ A tiny package to give your native HTML tables spreadsheet-style selection, copy
 
 - `core`: geometry, merge/subtract, copy planning, and selection persistence.
 - `dom`: the framework-agnostic enhancer for real `<table>` markup.
-- `react`: a React `<table>` component for enhanced tables, plus a hook for existing table refs.
+- `react`: a React `<table>` convenience component, plus a hook for existing table refs and custom behaviors.
 
 ## For app developers
 
@@ -12,7 +12,7 @@ A tiny package to give your native HTML tables spreadsheet-style selection, copy
 npm i table-steroids
 ```
 
-In React, import `TableSteroids` from `table-steroids/react` and use it in place of your normal `<table>`.
+In React, import `TableSteroids` from `table-steroids/react` and use it in place of your normal `<table>` when you want the quickest path.
 
 ```tsx
 import { TableSteroids } from "table-steroids/react";
@@ -27,7 +27,7 @@ export function PricingTable() {
 }
 ```
 
-If a component already renders the `<table>` elsewhere and provides a ref to the DOM node, use the hook instead:
+If a component already renders the `<table>` elsewhere and provides a ref to the DOM node, use the hook instead. This is the recommended path when you want custom rendering, app-owned data updates, or extra keyboard actions:
 
 ```tsx
 import * as React from "react";
@@ -42,6 +42,8 @@ export function ExistingTable() {
 }
 ```
 
+`TableSteroids` is a thin wrapper around the same DOM enhancer. The lower-level `enhanceTable` API and the React hook are the headless center of the package.
+
 Outside React, enhance real tables directly:
 
 ```ts
@@ -51,13 +53,75 @@ enhanceTable(document.querySelector("table")!);
 enhanceTables(document);
 ```
 
+## Extending behaviors with plugins
+
+The library owns spreadsheet primitives like selection, keyboard navigation, copy, overlay rendering, and model refresh. App-specific behaviors should be layered on through plugins.
+
+```tsx
+import * as React from "react";
+import { useReactTableSteroids, type TableSpreadsheetPlugin } from "table-steroids/react";
+
+function createDeletePlugin(
+  clearCells: (selectedCells: Array<{ rowId: string; columnId: string }>) => void,
+): TableSpreadsheetPlugin {
+  return {
+    name: "delete-selection",
+    onKeyDown(event, snapshot, context) {
+      if (event.key !== "Delete" && event.key !== "Backspace") {
+        return;
+      }
+
+      if (snapshot.selectedCells.length === 0) {
+        return;
+      }
+
+      event.preventDefault();
+      clearCells(
+        snapshot.selectedCells.map((cell) => ({
+          rowId: cell.rowId,
+          columnId: cell.columnId,
+        })),
+      );
+      context.clearSelection();
+      context.refresh();
+      return "handled";
+    },
+  };
+}
+
+export function EditableTable() {
+  const tableRef = React.useRef<HTMLTableElement | null>(null);
+  const deletePlugin = React.useMemo(() => createDeletePlugin((cells) => {
+    console.log("clear these cells", cells);
+  }), []);
+
+  useReactTableSteroids(tableRef, {
+    plugins: [deletePlugin],
+  });
+
+  return <table ref={tableRef}>...</table>;
+}
+```
+
+Each plugin receives a current selection snapshot plus a small context with `table`, `handle`, `getSnapshot()`, `refresh()`, `clearSelection()`, and `copySelection()`.
+
 The npm package is designed for desktop and mobile web. By default it auto-selects a desktop or touch interaction model at runtime.
+
+For tables with interactive headers or custom affordances, you can keep selection scoped to body cells and opt into click-style activation:
+
+```ts
+enhanceTable(document.querySelector("table")!, {
+  selectionScope: "tbody",
+  activationMode: "click",
+  shouldIgnoreEvent: ({ event }) => event.target instanceof Element && event.target.closest("[data-resize-handle]") !== null,
+});
+```
 
 ## For non-developers
 
 Enhance any table across the web without installing anything by using a bookmarklet. The bookmarklet is desktop-only.
 
-[Visit this page](http://localhost:9001/2026/table#for-everyone) to drag and drop the bookmarklet onto your bookmarks bar.
+[Visit this page](http://saj.ad/2026/table#for-everyone) to drag and drop the bookmarklet onto your bookmarks bar.
 
 Or set up a bookmarklet manually:
 
@@ -73,13 +137,14 @@ Once used, the popup will show `latest version` or `offline version` depending o
 
 - Native table semantics are preserved. The enhancer does not replace `<table>` with a fake grid.
 - Keyboard navigation and range expansion work once a managed cell receives focus.
-- Interactive descendants like links, buttons, inputs, selects, textareas, `[contenteditable='true']`, and `[data-spreadsheet-ignore]` regions are not hijacked.
+- Interactive descendants like links, buttons, inputs, selects, textareas, `[contenteditable='true']`, `[data-spreadsheet-ignore]`, and `[data-table-steroids-ignore]` regions are not hijacked.
 - The package intentionally relies on the overlay for visual selection state, rather than adding intrusive per-cell border styles.
 
 ## Interaction modes
 
 - `interactionMode: "auto"` is the default for the npm package. It resolves to desktop or touch behavior at runtime.
 - `interactionMode: "desktop"` keeps keyboard navigation, modifier-based multi-range selection, and copy shortcuts.
+- `activationMode: "pointerdown"` is the default desktop behavior. Use `activationMode: "click"` when you want single-cell selection to wait until release instead of raw press.
 - `interactionMode: "touch"` keeps selection lightweight for phones and tablets: tap to select and drag to expand a range.
 - The bookmarklet always uses desktop mode.
 
@@ -87,10 +152,12 @@ Once used, the popup will show `latest version` or `offline version` depending o
 
 - Click-to-select and drag-to-select
 - Tap-to-select and drag-to-select on touch devices
+- Desktop drag selection that waits for a small movement threshold before capturing the pointer
 - Cmd/Ctrl additive and subtractive multi-range selection
 - Arrow-key navigation plus Shift+arrow range expansion
 - Honest clipboard behavior for single, horizontal, vertical, and irregular multi-range copies, including HTML table payloads when the browser allows it
 - `rowSpan` and `colSpan` aware modeling for native table cells
+- Selection scoping with `selectionScope: "all" | "tbody"` plus `isSelectableCell(cell)` filtering
 - Overlay rendering that tracks scrolling and window resizing
 - Selection persistence when the table model rebuilds, including observed DOM mutations and manual refreshes
 

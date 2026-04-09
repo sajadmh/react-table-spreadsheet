@@ -2,9 +2,15 @@ export {
   enhanceTable,
   enhanceTables,
   type EnhanceTablesOptions,
+  type TableSpreadsheetActivationMode,
   type TableSpreadsheetCollectionHandle,
   type TableSpreadsheetHandle,
+  type TableSpreadsheetIgnoreContext,
+  type TableSpreadsheetIgnorePhase,
+  type TableSelectionSnapshot,
   type TableSpreadsheetOptions,
+  type TableSpreadsheetPlugin,
+  type TableSpreadsheetPluginContext,
 } from "./dom/enhance-table.js";
 export {
   resolveInteractionMode,
@@ -12,6 +18,13 @@ export {
   type ResolvedTableSpreadsheetInteractionMode,
   type TableSpreadsheetInteractionMode,
 } from "./dom/interaction-mode.js";
-export { buildDOMTableModel, getCoordinateKey, type DOMTableCell, type DOMTableModel } from "./dom/table-model.js";
+export {
+  buildDOMTableModel,
+  getCoordinateKey,
+  type BuildDOMTableModelOptions,
+  type DOMTableCell,
+  type DOMTableModel,
+  type DOMTableSelectionScope,
+} from "./dom/table-model.js";
 export { DEFAULT_OVERLAY_THEME, type OverlayClipRect, type OverlayRect, type SpreadsheetOverlayTheme } from "./dom/overlay.js";
 export * from "./core.js";

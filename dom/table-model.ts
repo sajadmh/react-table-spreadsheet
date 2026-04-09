@@ -18,11 +18,15 @@ export interface DOMTableModel {
   copyValueByCoordinate: Map<string, string>;
 }
 
+export type DOMTableSelectionScope = "all" | "tbody";
+
 export interface BuildDOMTableModelOptions {
   getCellText?: (cell: HTMLTableCellElement) => string;
+  selectionScope?: DOMTableSelectionScope;
+  isSelectableCell?: (cell: HTMLTableCellElement) => boolean;
 }
 
-type DOMTableGrid = DOMTableCell[][];
+type DOMTableGrid = boolean[][];
 
 /**
  * Flattens cell text into a single spreadsheet-friendly line.
@@ -64,7 +68,7 @@ function ensureGridRow(grid: DOMTableGrid, rowIndex: number) {
 /**
  * Finds the next free logical column in a grid row.
  */
-function getNextAvailableColumn(gridRow: DOMTableCell[], startIndex: number) {
+function getNextAvailableColumn(gridRow: DOMTableGrid[number], startIndex: number) {
   let columnIndex = startIndex;
 
   while (gridRow[columnIndex]) {
@@ -72,6 +76,35 @@ function getNextAvailableColumn(gridRow: DOMTableCell[], startIndex: number) {
   }
 
   return columnIndex;
+}
+
+/**
+ * Marks every logical coordinate covered by one table cell and its spans.
+ */
+function occupyGridSlots(
+  grid: DOMTableGrid,
+  rowIndex: number,
+  columnIndex: number,
+  rowSpan: number,
+  colSpan: number,
+  onCoordinate?: (aliasRowIndex: number, aliasColumnIndex: number, rowOffset: number, columnOffset: number) => void,
+) {
+  let maxColumnCount = 0;
+
+  for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
+    const aliasRowIndex = rowIndex + rowOffset;
+    const gridRow = ensureGridRow(grid, aliasRowIndex);
+
+    for (let columnOffset = 0; columnOffset < colSpan; columnOffset += 1) {
+      const aliasColumnIndex = columnIndex + columnOffset;
+
+      gridRow[aliasColumnIndex] = true;
+      onCoordinate?.(aliasRowIndex, aliasColumnIndex, rowOffset, columnOffset);
+      maxColumnCount = Math.max(maxColumnCount, aliasColumnIndex + 1);
+    }
+  }
+
+  return maxColumnCount;
 }
 
 /**
@@ -86,14 +119,13 @@ function registerCellAliases(
   cellByCoordinate: Map<string, DOMTableCell>,
   copyValueByCoordinate: Map<string, string>,
 ) {
-  let maxColumnCount = 0;
-
-  for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
-    const aliasRowIndex = cell.rowIndex + rowOffset;
-    const gridRow = ensureGridRow(grid, aliasRowIndex);
-
-    for (let columnOffset = 0; columnOffset < colSpan; columnOffset += 1) {
-      const aliasColumnIndex = cell.columnIndex + columnOffset;
+  return occupyGridSlots(
+    grid,
+    cell.rowIndex,
+    cell.columnIndex,
+    rowSpan,
+    colSpan,
+    (aliasRowIndex, aliasColumnIndex, rowOffset, columnOffset) => {
       const alias = {
         rowId: getRowId(aliasRowIndex),
         columnId: getColumnId(aliasColumnIndex),
@@ -101,14 +133,21 @@ function registerCellAliases(
       const coordinateKey = getCoordinateKey(alias.rowId, alias.columnId);
 
       cell.aliases.push(alias);
-      gridRow[aliasColumnIndex] = cell;
       cellByCoordinate.set(coordinateKey, cell);
       copyValueByCoordinate.set(coordinateKey, rowOffset === 0 && columnOffset === 0 ? copyValue : "");
-      maxColumnCount = Math.max(maxColumnCount, aliasColumnIndex + 1);
-    }
+    },
+  );
+}
+
+/**
+ * Resolves the row elements included in the logical selection model.
+ */
+function getScopedRowElements(table: HTMLTableElement, selectionScope: DOMTableSelectionScope) {
+  if (selectionScope === "tbody") {
+    return Array.from(table.tBodies).flatMap((section) => Array.from(section.rows));
   }
 
-  return maxColumnCount;
+  return Array.from(table.rows);
 }
 
 /**
@@ -123,7 +162,9 @@ export function getCoordinateKey(rowId: string, columnId: string) {
  */
 export function buildDOMTableModel(table: HTMLTableElement, options: BuildDOMTableModelOptions = {}): DOMTableModel {
   const getCellText = options.getCellText ?? defaultGetCellText;
-  const rowElements = Array.from(table.rows);
+  const selectionScope = options.selectionScope ?? "all";
+  const isSelectableCell = options.isSelectableCell ?? (() => true);
+  const rowElements = getScopedRowElements(table, selectionScope);
   const rows = rowElements.map((_, index) => ({ id: getRowId(index) }));
   const grid: DOMTableGrid = [];
   const cells: DOMTableCell[] = [];
@@ -139,6 +180,12 @@ export function buildDOMTableModel(table: HTMLTableElement, options: BuildDOMTab
       const columnIndex = getNextAvailableColumn(gridRow, searchColumnIndex);
       const rowSpan = Math.max(1, cellElement.rowSpan || 1);
       const colSpan = Math.max(1, cellElement.colSpan || 1);
+
+      if (!isSelectableCell(cellElement)) {
+        maxColumnCount = Math.max(maxColumnCount, occupyGridSlots(grid, rowIndex, columnIndex, rowSpan, colSpan));
+        searchColumnIndex = columnIndex + colSpan;
+        return;
+      }
 
       const cell: DOMTableCell = {
         id: `cell-${rowIndex}-${columnIndex}-${cellIndex}`,

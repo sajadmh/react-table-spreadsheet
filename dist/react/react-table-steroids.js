@@ -10,7 +10,7 @@ function assignRef(ref, value) {
         ref.current = value;
     }
 }
-export const TableSteroids = React.forwardRef(function TableSteroidsWithRef({ allowCellSelection = true, allowRangeSelection = true, observeMutations = true, onSelectionCopy, onSelectionChange, getCellText, overlay, ...tableProps }, forwardedRef) {
+export const TableSteroids = React.forwardRef(function TableSteroidsWithRef({ allowCellSelection = true, allowRangeSelection = true, activationMode, observeMutations = true, onSelectionCopy, onSelectionChange, getCellText, selectionScope, isSelectableCell, shouldIgnoreEvent, overlay, plugins, ...tableProps }, forwardedRef) {
     const tableRef = React.useRef(null);
     React.useEffect(() => {
         const table = tableRef.current;
@@ -20,16 +20,34 @@ export const TableSteroids = React.forwardRef(function TableSteroidsWithRef({ al
         const handle = enhanceTable(table, {
             allowCellSelection,
             allowRangeSelection,
+            activationMode,
             observeMutations,
             onSelectionCopy,
             onSelectionChange,
             getCellText,
+            selectionScope,
+            isSelectableCell,
+            shouldIgnoreEvent,
             overlay,
+            plugins,
         });
         return () => {
             handle.destroy();
         };
-    }, [allowCellSelection, allowRangeSelection, getCellText, observeMutations, onSelectionChange, onSelectionCopy, overlay]);
+    }, [
+        activationMode,
+        allowCellSelection,
+        allowRangeSelection,
+        getCellText,
+        isSelectableCell,
+        observeMutations,
+        onSelectionChange,
+        onSelectionCopy,
+        overlay,
+        plugins,
+        selectionScope,
+        shouldIgnoreEvent,
+    ]);
     return React.createElement("table", {
         ...tableProps,
         ref: (node) => {

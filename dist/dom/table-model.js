@@ -41,28 +41,45 @@ function getNextAvailableColumn(gridRow, startIndex) {
     return columnIndex;
 }
 /**
- * Registers every logical coordinate covered by one DOM cell and its spans.
+ * Marks every logical coordinate covered by one table cell and its spans.
  */
-function registerCellAliases(cell, grid, rowSpan, colSpan, copyValue, cellByCoordinate, copyValueByCoordinate) {
+function occupyGridSlots(grid, rowIndex, columnIndex, rowSpan, colSpan, onCoordinate) {
     let maxColumnCount = 0;
     for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
-        const aliasRowIndex = cell.rowIndex + rowOffset;
+        const aliasRowIndex = rowIndex + rowOffset;
         const gridRow = ensureGridRow(grid, aliasRowIndex);
         for (let columnOffset = 0; columnOffset < colSpan; columnOffset += 1) {
-            const aliasColumnIndex = cell.columnIndex + columnOffset;
-            const alias = {
-                rowId: getRowId(aliasRowIndex),
-                columnId: getColumnId(aliasColumnIndex),
-            };
-            const coordinateKey = getCoordinateKey(alias.rowId, alias.columnId);
-            cell.aliases.push(alias);
-            gridRow[aliasColumnIndex] = cell;
-            cellByCoordinate.set(coordinateKey, cell);
-            copyValueByCoordinate.set(coordinateKey, rowOffset === 0 && columnOffset === 0 ? copyValue : "");
+            const aliasColumnIndex = columnIndex + columnOffset;
+            gridRow[aliasColumnIndex] = true;
+            onCoordinate?.(aliasRowIndex, aliasColumnIndex, rowOffset, columnOffset);
             maxColumnCount = Math.max(maxColumnCount, aliasColumnIndex + 1);
         }
     }
     return maxColumnCount;
+}
+/**
+ * Registers every logical coordinate covered by one DOM cell and its spans.
+ */
+function registerCellAliases(cell, grid, rowSpan, colSpan, copyValue, cellByCoordinate, copyValueByCoordinate) {
+    return occupyGridSlots(grid, cell.rowIndex, cell.columnIndex, rowSpan, colSpan, (aliasRowIndex, aliasColumnIndex, rowOffset, columnOffset) => {
+        const alias = {
+            rowId: getRowId(aliasRowIndex),
+            columnId: getColumnId(aliasColumnIndex),
+        };
+        const coordinateKey = getCoordinateKey(alias.rowId, alias.columnId);
+        cell.aliases.push(alias);
+        cellByCoordinate.set(coordinateKey, cell);
+        copyValueByCoordinate.set(coordinateKey, rowOffset === 0 && columnOffset === 0 ? copyValue : "");
+    });
+}
+/**
+ * Resolves the row elements included in the logical selection model.
+ */
+function getScopedRowElements(table, selectionScope) {
+    if (selectionScope === "tbody") {
+        return Array.from(table.tBodies).flatMap((section) => Array.from(section.rows));
+    }
+    return Array.from(table.rows);
 }
 /**
  * Builds a stable map key for one logical table coordinate.
@@ -75,7 +92,9 @@ export function getCoordinateKey(rowId, columnId) {
  */
 export function buildDOMTableModel(table, options = {}) {
     const getCellText = options.getCellText ?? defaultGetCellText;
-    const rowElements = Array.from(table.rows);
+    const selectionScope = options.selectionScope ?? "all";
+    const isSelectableCell = options.isSelectableCell ?? (() => true);
+    const rowElements = getScopedRowElements(table, selectionScope);
     const rows = rowElements.map((_, index) => ({ id: getRowId(index) }));
     const grid = [];
     const cells = [];
@@ -89,6 +108,11 @@ export function buildDOMTableModel(table, options = {}) {
             const columnIndex = getNextAvailableColumn(gridRow, searchColumnIndex);
             const rowSpan = Math.max(1, cellElement.rowSpan || 1);
             const colSpan = Math.max(1, cellElement.colSpan || 1);
+            if (!isSelectableCell(cellElement)) {
+                maxColumnCount = Math.max(maxColumnCount, occupyGridSlots(grid, rowIndex, columnIndex, rowSpan, colSpan));
+                searchColumnIndex = columnIndex + colSpan;
+                return;
+            }
             const cell = {
                 id: `cell-${rowIndex}-${columnIndex}-${cellIndex}`,
                 rowId: getRowId(rowIndex),

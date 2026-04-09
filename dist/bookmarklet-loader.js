@@ -690,28 +690,45 @@ function getNextAvailableColumn(gridRow, startIndex) {
     return columnIndex;
 }
 /**
- * Registers every logical coordinate covered by one DOM cell and its spans.
+ * Marks every logical coordinate covered by one table cell and its spans.
  */
-function registerCellAliases(cell, grid, rowSpan, colSpan, copyValue, cellByCoordinate, copyValueByCoordinate) {
+function occupyGridSlots(grid, rowIndex, columnIndex, rowSpan, colSpan, onCoordinate) {
     let maxColumnCount = 0;
     for (let rowOffset = 0; rowOffset < rowSpan; rowOffset += 1) {
-        const aliasRowIndex = cell.rowIndex + rowOffset;
+        const aliasRowIndex = rowIndex + rowOffset;
         const gridRow = ensureGridRow(grid, aliasRowIndex);
         for (let columnOffset = 0; columnOffset < colSpan; columnOffset += 1) {
-            const aliasColumnIndex = cell.columnIndex + columnOffset;
-            const alias = {
-                rowId: getRowId(aliasRowIndex),
-                columnId: getColumnId(aliasColumnIndex),
-            };
-            const coordinateKey = getCoordinateKey(alias.rowId, alias.columnId);
-            cell.aliases.push(alias);
-            gridRow[aliasColumnIndex] = cell;
-            cellByCoordinate.set(coordinateKey, cell);
-            copyValueByCoordinate.set(coordinateKey, rowOffset === 0 && columnOffset === 0 ? copyValue : "");
+            const aliasColumnIndex = columnIndex + columnOffset;
+            gridRow[aliasColumnIndex] = true;
+            onCoordinate?.(aliasRowIndex, aliasColumnIndex, rowOffset, columnOffset);
             maxColumnCount = Math.max(maxColumnCount, aliasColumnIndex + 1);
         }
     }
     return maxColumnCount;
+}
+/**
+ * Registers every logical coordinate covered by one DOM cell and its spans.
+ */
+function registerCellAliases(cell, grid, rowSpan, colSpan, copyValue, cellByCoordinate, copyValueByCoordinate) {
+    return occupyGridSlots(grid, cell.rowIndex, cell.columnIndex, rowSpan, colSpan, (aliasRowIndex, aliasColumnIndex, rowOffset, columnOffset) => {
+        const alias = {
+            rowId: getRowId(aliasRowIndex),
+            columnId: getColumnId(aliasColumnIndex),
+        };
+        const coordinateKey = getCoordinateKey(alias.rowId, alias.columnId);
+        cell.aliases.push(alias);
+        cellByCoordinate.set(coordinateKey, cell);
+        copyValueByCoordinate.set(coordinateKey, rowOffset === 0 && columnOffset === 0 ? copyValue : "");
+    });
+}
+/**
+ * Resolves the row elements included in the logical selection model.
+ */
+function getScopedRowElements(table, selectionScope) {
+    if (selectionScope === "tbody") {
+        return Array.from(table.tBodies).flatMap((section) => Array.from(section.rows));
+    }
+    return Array.from(table.rows);
 }
 /**
  * Builds a stable map key for one logical table coordinate.
@@ -724,7 +741,9 @@ function getCoordinateKey(rowId, columnId) {
  */
 function buildDOMTableModel(table, options = {}) {
     const getCellText = options.getCellText ?? defaultGetCellText;
-    const rowElements = Array.from(table.rows);
+    const selectionScope = options.selectionScope ?? "all";
+    const isSelectableCell = options.isSelectableCell ?? (() => true);
+    const rowElements = getScopedRowElements(table, selectionScope);
     const rows = rowElements.map((_, index) => ({ id: getRowId(index) }));
     const grid = [];
     const cells = [];
@@ -738,6 +757,11 @@ function buildDOMTableModel(table, options = {}) {
             const columnIndex = getNextAvailableColumn(gridRow, searchColumnIndex);
             const rowSpan = Math.max(1, cellElement.rowSpan || 1);
             const colSpan = Math.max(1, cellElement.colSpan || 1);
+            if (!isSelectableCell(cellElement)) {
+                maxColumnCount = Math.max(maxColumnCount, occupyGridSlots(grid, rowIndex, columnIndex, rowSpan, colSpan));
+                searchColumnIndex = columnIndex + colSpan;
+                return;
+            }
             const cell = {
                 id: `cell-${rowIndex}-${columnIndex}-${cellIndex}`,
                 rowId: getRowId(rowIndex),
@@ -778,7 +802,9 @@ const IGNORE_INTERACTIVE_SELECTOR = [
     "textarea",
     "[contenteditable='true']",
     "[data-spreadsheet-ignore]",
+    "[data-table-steroids-ignore]",
 ].join(",");
+const DEFAULT_DRAG_ACTIVATION_THRESHOLD = 5;
 const MANAGED_CELL_ATTRIBUTE = "data-table-steroids-cell";
 const MANAGED_CELL_STYLE_ID = "table-steroids-cell-style";
 const MANAGED_TABLE_ATTRIBUTE = "data-table-steroids";
@@ -855,6 +881,12 @@ function shouldIgnoreTarget(target, cellElement) {
     return interactiveElement !== null && cellElement.contains(interactiveElement);
 }
 /**
+ * Measures how far a pending pointer press has moved from its origin.
+ */
+function getPointerMovementDistance(startClientX, startClientY, currentClientX, currentClientY) {
+    return Math.hypot(currentClientX - startClientX, currentClientY - startClientY);
+}
+/**
  * Converts a DOM table cell model into selection coordinates.
  */
 function getCellCoordinates(cell) {
@@ -889,6 +921,43 @@ function cloneSelections(selections) {
  */
 function getLastSelection(selections) {
     return selections.length > 0 ? selections[selections.length - 1] : null;
+}
+/**
+ * Creates deep copies of a selection bounds list.
+ */
+function cloneSelectionBoundsList(bounds) {
+    return bounds.map((selectionBounds) => ({ ...selectionBounds }));
+}
+/**
+ * Creates a shallow clone of one DOM table cell descriptor.
+ */
+function cloneDOMTableCell(cell) {
+    return {
+        ...cell,
+        aliases: cell.aliases.map((alias) => ({ ...alias })),
+    };
+}
+/**
+ * Resolves the current numeric bounds for a selection list.
+ */
+function getSelectionBoundsList(selections, rowIndexMap, columnIndexMap) {
+    return selections
+        .map((selection) => getSelectionBounds(selection, rowIndexMap, columnIndexMap))
+        .filter((selectionBounds) => selectionBounds !== null);
+}
+/**
+ * Resolves the rendered DOM cells covered by a selection bounds list.
+ */
+function getSelectedDOMTableCells(boundsList, model, rowIndexMap, columnIndexMap) {
+    const selectedCells = new Map();
+    boundsList.forEach((selectionBounds) => {
+        model.cells.forEach((cell) => {
+            if (cellIntersectsSelectionBounds(cell, selectionBounds, rowIndexMap, columnIndexMap)) {
+                selectedCells.set(cell.id, cell);
+            }
+        });
+    });
+    return Array.from(selectedCells.values());
 }
 /**
  * Creates one clipboard cell for the copied HTML table payload.
@@ -1031,11 +1100,18 @@ function enhanceTable(table, options = {}) {
     const allowCellSelection = options.allowCellSelection ?? true;
     const allowRangeSelection = options.allowRangeSelection ?? true;
     const interactionMode = resolveInteractionMode(options.interactionMode);
+    const activationMode = options.activationMode ?? "pointerdown";
     const observeMutations = options.observeMutations ?? true;
+    const plugins = options.plugins ?? [];
     const overlay = new SelectionOverlay(options.overlay);
     const managedCells = new Map();
     const cellByElement = new WeakMap();
-    let model = buildDOMTableModel(table, { getCellText: options.getCellText });
+    const modelBuildOptions = {
+        getCellText: options.getCellText,
+        selectionScope: options.selectionScope,
+        isSelectableCell: options.isSelectableCell,
+    };
+    let model = buildDOMTableModel(table, modelBuildOptions);
     let rowIndexMap = buildIndexMap(model.rows);
     let columnIndexMap = buildIndexMap(model.columns);
     let selectionRanges = [];
@@ -1043,10 +1119,12 @@ function enhanceTable(table, options = {}) {
     let copiedSelectionKeys = [];
     let selectedCell = null;
     let rangeAnchorCell = null;
+    let pendingPressState = null;
     let dragState = null;
     let frameId = null;
     let bodyUserSelectValue = null;
     const previousTouchAction = table.style.touchAction;
+    let handle;
     ensureManagedCellStyles();
     table.setAttribute(MANAGED_TABLE_ATTRIBUTE, "true");
     if (interactionMode === "touch") {
@@ -1056,7 +1134,29 @@ function enhanceTable(table, options = {}) {
      * Emits the current selection state through the external callback.
      */
     const emitSelectionChange = () => {
-        options.onSelectionChange?.(cloneSelections(selectionRanges), activeSelection ? cloneSelection(activeSelection) : null);
+        const selections = cloneSelections(selectionRanges);
+        const nextActiveSelection = activeSelection ? cloneSelection(activeSelection) : null;
+        options.onSelectionChange?.(selections, nextActiveSelection);
+        if (plugins.length === 0) {
+            return;
+        }
+        const snapshot = getSelectionSnapshot();
+        plugins.forEach((plugin) => {
+            plugin.onSelectionChange?.(snapshot, pluginContext);
+        });
+    };
+    /**
+     * Returns a snapshot of the current selection state and rendered cells.
+     */
+    const getSelectionSnapshot = () => {
+        const bounds = cloneSelectionBoundsList(getSelectionBoundsList(selectionRanges, rowIndexMap, columnIndexMap));
+        const selectedCells = getSelectedDOMTableCells(bounds, model, rowIndexMap, columnIndexMap).map(cloneDOMTableCell);
+        return {
+            selections: cloneSelections(selectionRanges),
+            activeSelection: activeSelection ? cloneSelection(activeSelection) : null,
+            bounds,
+            selectedCells,
+        };
     };
     /**
      * Builds the current copy payload for the active selection state.
@@ -1095,6 +1195,82 @@ function enhanceTable(table, options = {}) {
         options.onSelectionCopy?.(copyPayload.text, copyPayload.plan.selections);
         copiedSelectionKeys = copyPayload.plan.selections.map((selection) => getSelectionKey(selection));
         scheduleOverlayRender();
+        return true;
+    };
+    /**
+     * Checks whether one managed interaction should be ignored.
+     */
+    const shouldIgnoreManagedEvent = (event, cell, phase) => {
+        if ((cell && shouldIgnoreTarget(event.target, cell.element)) ||
+            (!cell && isElement(event.target) && event.target.closest(IGNORE_INTERACTIVE_SELECTOR))) {
+            return true;
+        }
+        return options.shouldIgnoreEvent?.({ event, cell, phase }) ?? false;
+    };
+    const pluginContext = {
+        table,
+        get handle() {
+            return handle;
+        },
+        getSnapshot: () => getSelectionSnapshot(),
+        refresh: () => handle.refresh(),
+        clearSelection: () => handle.clearSelection(),
+        copySelection: () => handle.copySelection(),
+    };
+    /**
+     * Gives installed plugins a chance to handle a focused table keydown first.
+     */
+    const dispatchKeyDownPlugins = (event) => {
+        if (plugins.length === 0) {
+            return false;
+        }
+        const snapshot = getSelectionSnapshot();
+        for (const plugin of plugins) {
+            if (plugin.onKeyDown?.(event, snapshot, pluginContext) === "handled") {
+                return true;
+            }
+        }
+        return false;
+    };
+    /**
+     * Applies a pointer-driven selection and returns the cell that should receive focus.
+     */
+    const commitPointerSelection = (selection, mode, baseSelections) => {
+        let focusTarget = selection.end;
+        applySelection(selection, mode, baseSelections);
+        if (mode === "subtract") {
+            selectedCell = activeSelection?.end ?? null;
+            rangeAnchorCell = selectedCell;
+            if (selectedCell) {
+                focusTarget = selectedCell;
+            }
+        }
+        else {
+            selectedCell = selection.end;
+            rangeAnchorCell = selection.start;
+        }
+        return focusTarget;
+    };
+    /**
+     * Clears any pending desktop press before it becomes a drag or click selection.
+     */
+    const clearPendingPress = () => {
+        pendingPressState = null;
+    };
+    /**
+     * Promotes a pending desktop press into an active drag interaction.
+     */
+    const promotePendingPressToDrag = (event) => {
+        if (!pendingPressState || pendingPressState.pointerId !== event.pointerId || !allowRangeSelection) {
+            return false;
+        }
+        if (getPointerMovementDistance(pendingPressState.clientX, pendingPressState.clientY, event.clientX, event.clientY) < DEFAULT_DRAG_ACTIVATION_THRESHOLD) {
+            return false;
+        }
+        startDragSelection(pendingPressState.pointerId, pendingPressState.pointerType, pendingPressState.selection, pendingPressState.anchor, pendingPressState.mode, pendingPressState.baseSelections);
+        event.preventDefault();
+        table.setPointerCapture?.(event.pointerId);
+        clearPendingPress();
         return true;
     };
     /**
@@ -1187,10 +1363,11 @@ function enhanceTable(table, options = {}) {
             : snapshotSelectionState(selectionRanges, activeSelection, model.rows, model.columns);
         const selectedCellSnapshot = clearSelection ? null : selectedCell;
         const rangeAnchorSnapshot = clearSelection ? null : rangeAnchorCell;
-        model = buildDOMTableModel(table, { getCellText: options.getCellText });
+        model = buildDOMTableModel(table, modelBuildOptions);
         rowIndexMap = buildIndexMap(model.rows);
         columnIndexMap = buildIndexMap(model.columns);
         syncFocusableCells(model);
+        clearPendingPress();
         if (clearSelection) {
             selectionRanges = [];
             activeSelection = null;
@@ -1265,7 +1442,10 @@ function enhanceTable(table, options = {}) {
             return;
         }
         const cell = getEventCell(event.target, table, cellByElement);
-        if (!cell || shouldIgnoreTarget(event.target, cell.element)) {
+        if (!cell || shouldIgnoreManagedEvent(event, cell, "keydown")) {
+            return;
+        }
+        if (dispatchKeyDownPlugins(event)) {
             return;
         }
         if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) {
@@ -1324,20 +1504,41 @@ function enhanceTable(table, options = {}) {
             return;
         }
         const cell = getEventCell(event.target, table, cellByElement);
-        if (!cell || shouldIgnoreTarget(event.target, cell.element)) {
+        if (!cell || shouldIgnoreManagedEvent(event, cell, "pointerdown")) {
             return;
         }
-        event.preventDefault();
         const nextCell = getCellCoordinates(cell);
         const rangeAnchor = rangeAnchorCell ?? selectedCell ?? activeSelection?.end;
         const nextSelection = createSelection(nextCell, nextCell);
         const allowsDesktopMultiSelect = interactionMode === "desktop";
         const isToggleSelection = allowsDesktopMultiSelect && (event.metaKey || event.ctrlKey);
         const isRangeExtension = allowRangeSelection && allowsDesktopMultiSelect && event.shiftKey && rangeAnchor && !isToggleSelection;
+        const usesPendingDesktopPress = interactionMode === "desktop" && event.pointerType !== "touch";
+        clearPendingPress();
         if (isRangeExtension && rangeAnchor) {
+            const rangeSelection = createSelection(rangeAnchor, nextCell);
+            if (usesPendingDesktopPress) {
+                const selectionCommitted = activationMode === "pointerdown";
+                if (selectionCommitted) {
+                    commitPointerSelection(rangeSelection, "replace", []);
+                }
+                pendingPressState = {
+                    pointerId: event.pointerId,
+                    pointerType: event.pointerType,
+                    anchor: rangeAnchor,
+                    selection: rangeSelection,
+                    mode: "replace",
+                    baseSelections: [],
+                    clientX: event.clientX,
+                    clientY: event.clientY,
+                    selectionCommitted,
+                };
+                return;
+            }
+            event.preventDefault();
             selectedCell = nextCell;
             rangeAnchorCell = rangeAnchor;
-            startDragSelection(event.pointerId, event.pointerType, createSelection(rangeAnchor, nextCell), rangeAnchor, "replace", []);
+            startDragSelection(event.pointerId, event.pointerType, rangeSelection, rangeAnchor, "replace", []);
             table.setPointerCapture?.(event.pointerId);
             return;
         }
@@ -1346,20 +1547,45 @@ function enhanceTable(table, options = {}) {
                 ? "subtract"
                 : "add"
             : "replace";
+        const baseSelections = selectionRanges;
+        if (usesPendingDesktopPress) {
+            const selectionCommitted = activationMode === "pointerdown";
+            if (selectionCommitted) {
+                commitPointerSelection(nextSelection, mode, baseSelections);
+            }
+            pendingPressState = {
+                pointerId: event.pointerId,
+                pointerType: event.pointerType,
+                anchor: nextCell,
+                selection: nextSelection,
+                mode,
+                baseSelections,
+                clientX: event.clientX,
+                clientY: event.clientY,
+                selectionCommitted,
+            };
+            return;
+        }
+        event.preventDefault();
         selectedCell = nextCell;
         rangeAnchorCell = nextCell;
-        startDragSelection(event.pointerId, event.pointerType, nextSelection, nextCell, mode, selectionRanges);
+        startDragSelection(event.pointerId, event.pointerType, nextSelection, nextCell, mode, baseSelections);
         table.setPointerCapture?.(event.pointerId);
     };
     /**
      * Updates the in-progress selection while a pointer drag is active.
      */
     const handleTablePointerMove = (event) => {
+        if (pendingPressState && pendingPressState.pointerId === event.pointerId) {
+            if (!promotePendingPressToDrag(event)) {
+                return;
+            }
+        }
         if (!dragState || dragState.pointerId !== event.pointerId || !allowRangeSelection) {
             return;
         }
         const cell = getCellFromPoint(event.clientX, event.clientY, table, cellByElement) ?? getEventCell(event.target, table, cellByElement);
-        if (!cell) {
+        if (!cell || shouldIgnoreManagedEvent(event, cell, "pointermove")) {
             return;
         }
         if (dragState.pointerType !== "mouse") {
@@ -1384,21 +1610,8 @@ function enhanceTable(table, options = {}) {
         if (!dragState) {
             return;
         }
-        const committedSelection = dragState.selection;
-        let focusTarget = committedSelection.end;
-        applySelection(committedSelection, dragState.mode, dragState.baseSelections);
-        if (dragState.mode === "subtract") {
-            selectedCell = activeSelection?.end ?? null;
-            rangeAnchorCell = selectedCell;
-            if (selectedCell) {
-                focusTarget = selectedCell;
-            }
-        }
-        else {
-            selectedCell = committedSelection.end;
-            rangeAnchorCell = committedSelection.start;
-        }
-        if (interactionMode === "desktop") {
+        const focusTarget = commitPointerSelection(dragState.selection, dragState.mode, dragState.baseSelections);
+        if (interactionMode === "desktop" && focusTarget) {
             focusCell(focusTarget.rowId, focusTarget.columnId);
         }
         stopDragSelection();
@@ -1407,6 +1620,17 @@ function enhanceTable(table, options = {}) {
      * Commits any active pointer selection when the interaction ends.
      */
     const handleTablePointerUp = (event) => {
+        if (pendingPressState && pendingPressState.pointerId === event.pointerId) {
+            const nextPendingPressState = pendingPressState;
+            const focusTarget = nextPendingPressState.selectionCommitted
+                ? selectedCell ?? nextPendingPressState.selection.end
+                : commitPointerSelection(nextPendingPressState.selection, nextPendingPressState.mode, nextPendingPressState.baseSelections);
+            clearPendingPress();
+            if (interactionMode === "desktop" && focusTarget) {
+                focusCell(focusTarget.rowId, focusTarget.columnId);
+            }
+            return;
+        }
         if (!dragState || dragState.pointerId !== event.pointerId) {
             return;
         }
@@ -1422,6 +1646,10 @@ function enhanceTable(table, options = {}) {
      * Cancels any active pointer-driven selection.
      */
     const handleTablePointerCancel = (event) => {
+        if (pendingPressState && pendingPressState.pointerId === event.pointerId) {
+            clearPendingPress();
+            return;
+        }
         if (!dragState || dragState.pointerId !== event.pointerId) {
             return;
         }
@@ -1440,10 +1668,14 @@ function enhanceTable(table, options = {}) {
         if (!table.contains(document.activeElement)) {
             return;
         }
-        if (document.activeElement instanceof HTMLElement && document.activeElement.closest(IGNORE_INTERACTIVE_SELECTOR)) {
+        const cell = getEventCell(event.target, table, cellByElement);
+        if (shouldIgnoreManagedEvent(event, cell, "copy")) {
             return;
         }
         if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "c") {
+            return;
+        }
+        if (dispatchKeyDownPlugins(event)) {
             return;
         }
         event.preventDefault();
@@ -1469,8 +1701,6 @@ function enhanceTable(table, options = {}) {
         })
         : null;
     syncFocusableCells(model);
-    emitSelectionChange();
-    scheduleOverlayRender();
     table.addEventListener("keydown", handleCellKeyDown);
     table.addEventListener("pointerdown", handleTablePointerDown);
     table.addEventListener("pointermove", handleTablePointerMove);
@@ -1487,7 +1717,7 @@ function enhanceTable(table, options = {}) {
         attributeFilter: ["rowspan", "colspan"],
     });
     resizeObserver?.observe(table);
-    const handle = {
+    handle = {
         /**
          * Removes spreadsheet behavior and restores the table to its original state.
          */
@@ -1506,6 +1736,7 @@ function enhanceTable(table, options = {}) {
             window.removeEventListener("resize", handleDocumentScroll);
             mutationObserver?.disconnect();
             resizeObserver?.disconnect();
+            pluginCleanups.slice().reverse().forEach((cleanup) => cleanup());
             overlay.destroy();
             stopDragSelection(false);
             Array.from(managedCells.entries()).forEach(([cellElement, previousTabIndex]) => {
@@ -1542,6 +1773,12 @@ function enhanceTable(table, options = {}) {
             return activeSelection ? cloneSelection(activeSelection) : null;
         },
         /**
+         * Returns a snapshot of the current selection state and selected DOM cells.
+         */
+        getSelectionSnapshot() {
+            return getSelectionSnapshot();
+        },
+        /**
          * Returns the resolved interaction mode for this table instance.
          */
         getInteractionMode() {
@@ -1554,6 +1791,11 @@ function enhanceTable(table, options = {}) {
             return copySelectionsToClipboard(selectionRanges, activeSelection);
         },
     };
+    const pluginCleanups = plugins
+        .map((plugin) => plugin.onSetup?.(pluginContext))
+        .filter((cleanup) => typeof cleanup === "function");
+    emitSelectionChange();
+    scheduleOverlayRender();
     enhancedTable.__nativeSpreadsheetHandle__ = handle;
     return handle;
 }
@@ -1628,4 +1870,4 @@ if (typeof window !== "undefined") {
         togglePage,
     };
     getBrowserGlobal()[API_GLOBAL_KEY] = api;
-}}};const __cache={};const __require=(id)=>{if(__cache[id])return __cache[id];const factory=__factories[id];if(!factory)throw new Error("Unknown module: "+id);const exports={};__cache[id]=exports;factory(exports,__require);return exports;};__require("browser-runtime.js");})();;(()=>{const g=globalThis;const d=g.document;if(!d)return;const versionTag="v0.1.6";const repoUrl="https://github.com/sajadmh/table-steroids";const subtitleColor="rgba(255,255,255,0.65)";const subtitleFont="500 11px/1.2 system-ui,sans-serif";const sourceKey="__tableSteroidsBookmarkletSource__";const sourceType=g[sourceKey]==="external"?"external":"fallback";const sourceValue=sourceType==="external"?"latest version":"offline version";const statusColor=sourceType==="external"?"rgb(34,197,94)":"rgb(250,204,21)";try{g.console?.info?.("[Table Steroids] Activated", { version: versionTag, source: sourceValue });}catch{}g.TableSteroids?.togglePage();const enabled=!!g.__tableSteroidsPageHandle__;const toastId="table-steroids-bookmarklet-toast";const existing=d.getElementById(toastId);if(existing){const timeoutId=Number(existing.getAttribute("data-timeout-id")||"0");if(timeoutId){g.clearTimeout(timeoutId);}existing.remove();}const toast=d.createElement("div");toast.id=toastId;toast.setAttribute("role","status");toast.setAttribute("aria-live","polite");const label=d.createElement("div");label.textContent=enabled?"Table steroids enabled":"Table steroids disabled";label.style.font="600 14px/1.25 system-ui,sans-serif";const version=d.createElement("div");version.style.font=subtitleFont;version.style.color=subtitleColor;version.style.display="inline-flex";version.style.alignItems="center";version.style.gap="6px";const statusDot=d.createElement("span");statusDot.style.width="8px";statusDot.style.height="8px";statusDot.style.borderRadius="9999px";statusDot.style.backgroundColor=statusColor;statusDot.style.flexShrink="0";version.append(statusDot);if(sourceType==="fallback"){const offlineLink=d.createElement("a");offlineLink.textContent="offline version";offlineLink.href=repoUrl;offlineLink.target="_blank";offlineLink.rel="noreferrer noopener";offlineLink.style.color=subtitleColor;offlineLink.style.font=subtitleFont;offlineLink.style.textDecoration="underline";offlineLink.style.textDecorationColor=subtitleColor;offlineLink.style.pointerEvents="auto";const separator=d.createElement("span");separator.textContent=" • ";const versionText=d.createElement("span");versionText.textContent=versionTag;version.append(offlineLink,separator,versionText);}else{const versionText=d.createElement("span");versionText.textContent="latest version";version.append(versionText);}toast.append(label,version);toast.style.position="fixed";toast.style.top="16px";toast.style.left="50%";toast.style.transform="translateX(-50%)";toast.style.padding="8px 14px";toast.style.borderRadius="10px";toast.style.background="rgba(17,24,39,0.92)";toast.style.color="#fff";toast.style.boxShadow="0 10px 30px rgba(0,0,0,0.2)";toast.style.zIndex="2147483647";toast.style.pointerEvents=sourceType==="fallback"?"auto":"none";toast.style.maxWidth="calc(100vw - 32px)";toast.style.textAlign="center";toast.style.overflow="hidden";(d.body||d.documentElement).appendChild(toast);const timeoutId=g.setTimeout(()=>{toast.remove();},5000);toast.setAttribute("data-timeout-id",String(timeoutId));delete g[sourceKey];})();
+}}};const __cache={};const __require=(id)=>{if(__cache[id])return __cache[id];const factory=__factories[id];if(!factory)throw new Error("Unknown module: "+id);const exports={};__cache[id]=exports;factory(exports,__require);return exports;};__require("browser-runtime.js");})();;(()=>{const g=globalThis;const d=g.document;if(!d)return;const versionTag="v0.1.8";const repoUrl="https://github.com/sajadmh/table-steroids";const subtitleColor="rgba(255,255,255,0.65)";const subtitleFont="500 11px/1.2 system-ui,sans-serif";const sourceKey="__tableSteroidsBookmarkletSource__";const sourceType=g[sourceKey]==="external"?"external":"fallback";const sourceValue=sourceType==="external"?"latest version":"offline version";const statusColor=sourceType==="external"?"rgb(34,197,94)":"rgb(250,204,21)";try{g.console?.info?.("[Table Steroids] Activated", { version: versionTag, source: sourceValue });}catch{}g.TableSteroids?.togglePage();const enabled=!!g.__tableSteroidsPageHandle__;const toastId="table-steroids-bookmarklet-toast";const existing=d.getElementById(toastId);if(existing){const timeoutId=Number(existing.getAttribute("data-timeout-id")||"0");if(timeoutId){g.clearTimeout(timeoutId);}existing.remove();}const toast=d.createElement("div");toast.id=toastId;toast.setAttribute("role","status");toast.setAttribute("aria-live","polite");const label=d.createElement("div");label.textContent=enabled?"Table steroids enabled":"Table steroids disabled";label.style.font="600 14px/1.25 system-ui,sans-serif";const version=d.createElement("div");version.style.font=subtitleFont;version.style.color=subtitleColor;version.style.display="inline-flex";version.style.alignItems="center";version.style.gap="6px";const statusDot=d.createElement("span");statusDot.style.width="8px";statusDot.style.height="8px";statusDot.style.borderRadius="9999px";statusDot.style.backgroundColor=statusColor;statusDot.style.flexShrink="0";version.append(statusDot);if(sourceType==="fallback"){const offlineLink=d.createElement("a");offlineLink.textContent="offline version";offlineLink.href=repoUrl;offlineLink.target="_blank";offlineLink.rel="noreferrer noopener";offlineLink.style.color=subtitleColor;offlineLink.style.font=subtitleFont;offlineLink.style.textDecoration="underline";offlineLink.style.textDecorationColor=subtitleColor;offlineLink.style.pointerEvents="auto";const separator=d.createElement("span");separator.textContent=" • ";const versionText=d.createElement("span");versionText.textContent=versionTag;version.append(offlineLink,separator,versionText);}else{const versionText=d.createElement("span");versionText.textContent="latest version";version.append(versionText);}toast.append(label,version);toast.style.position="fixed";toast.style.top="16px";toast.style.left="50%";toast.style.transform="translateX(-50%)";toast.style.padding="8px 14px";toast.style.borderRadius="10px";toast.style.background="rgba(17,24,39,0.92)";toast.style.color="#fff";toast.style.boxShadow="0 10px 30px rgba(0,0,0,0.2)";toast.style.zIndex="2147483647";toast.style.pointerEvents=sourceType==="fallback"?"auto":"none";toast.style.maxWidth="calc(100vw - 32px)";toast.style.textAlign="center";toast.style.overflow="hidden";(d.body||d.documentElement).appendChild(toast);const timeoutId=g.setTimeout(()=>{toast.remove();},5000);toast.setAttribute("data-timeout-id",String(timeoutId));delete g[sourceKey];})();

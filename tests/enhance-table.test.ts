@@ -1,0 +1,972 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+type Listener = (event: FakeEvent) => void;
+
+interface Rect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+class FakeEvent {
+  type: string;
+  bubbles: boolean;
+  cancelable: boolean;
+  defaultPrevented = false;
+  target: FakeElement | FakeDocument | null = null;
+  currentTarget: FakeElement | FakeDocument | FakeWindow | null = null;
+  readonly [key: string]: unknown;
+
+  constructor(type: string, init: Record<string, unknown> = {}) {
+    this.type = type;
+    this.bubbles = (init.bubbles as boolean | undefined) ?? true;
+    this.cancelable = (init.cancelable as boolean | undefined) ?? true;
+    Object.assign(this, init);
+  }
+
+  preventDefault() {
+    if (this.cancelable) {
+      this.defaultPrevented = true;
+    }
+  }
+}
+
+class FakeWindow {
+  private listeners = new Map<string, Set<Listener>>();
+
+  addEventListener(type: string, listener: Listener) {
+    this.listeners.get(type)?.add(listener) ?? this.listeners.set(type, new Set([listener]));
+  }
+
+  removeEventListener(type: string, listener: Listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: FakeEvent) {
+    event.currentTarget = this;
+    this.listeners.get(event.type)?.forEach((listener) => listener(event));
+  }
+
+  matchMedia() {
+    return { matches: false };
+  }
+
+  requestAnimationFrame(callback: FrameRequestCallback) {
+    callback(0);
+    return 1;
+  }
+
+  cancelAnimationFrame() {}
+}
+
+class FakeDocument {
+  head: FakeHTMLElement;
+  body: FakeHTMLElement;
+  documentElement: FakeHTMLElement;
+  activeElement: FakeElement | null = null;
+  elementFromPointResolver: ((clientX: number, clientY: number) => FakeElement | null) | null = null;
+  private listeners = new Map<string, Set<Listener>>();
+
+  constructor() {
+    this.documentElement = new FakeHTMLElement("html", this);
+    this.head = new FakeHTMLElement("head", this);
+    this.body = new FakeHTMLElement("body", this);
+
+    this.documentElement.append(this.head, this.body);
+    this.documentElement.connect();
+  }
+
+  createElement(tagName: string) {
+    const tag = tagName.toLowerCase();
+
+    if (tag === "table") {
+      return new FakeHTMLTableElement(this);
+    }
+    if (tag === "thead" || tag === "tbody") {
+      return new FakeHTMLTableSectionElement(tag, this);
+    }
+    if (tag === "tr") {
+      return new FakeHTMLTableRowElement(this);
+    }
+    if (tag === "td" || tag === "th") {
+      return new FakeHTMLTableCellElement(tag, this);
+    }
+    if (tag === "div" || tag === "span" || tag === "style" || tag === "button" || tag === "a") {
+      return new FakeHTMLElement(tag, this);
+    }
+
+    return new FakeHTMLElement(tag, this);
+  }
+
+  getElementById(id: string) {
+    const walk = (node: FakeElement): FakeElement | null => {
+      if (node.id === id) {
+        return node;
+      }
+
+      for (const child of node.childNodes) {
+        const match = walk(child);
+
+        if (match) {
+          return match;
+        }
+      }
+
+      return null;
+    };
+
+    return walk(this.documentElement);
+  }
+
+  elementFromPoint(clientX: number, clientY: number) {
+    return this.elementFromPointResolver?.(clientX, clientY) ?? null;
+  }
+
+  addEventListener(type: string, listener: Listener) {
+    this.listeners.get(type)?.add(listener) ?? this.listeners.set(type, new Set([listener]));
+  }
+
+  removeEventListener(type: string, listener: Listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: FakeEvent) {
+    event.currentTarget = this;
+    this.listeners.get(event.type)?.forEach((listener) => listener(event));
+  }
+}
+
+class FakeElement {
+  tagName: string;
+  ownerDocument: FakeDocument;
+  parentElement: FakeElement | null = null;
+  childNodes: FakeElement[] = [];
+  style: Record<string, string> = {};
+  textContent = "";
+  innerText = "";
+  isConnected = false;
+  id = "";
+  private attributes = new Map<string, string>();
+  private listeners = new Map<string, Set<Listener>>();
+  private rect: Rect = {
+    left: 0,
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 0,
+    height: 0,
+  };
+
+  constructor(tagName: string, ownerDocument: FakeDocument) {
+    this.tagName = tagName.toUpperCase();
+    this.ownerDocument = ownerDocument;
+  }
+
+  appendChild(child: FakeElement) {
+    child.parentElement = this;
+    child.ownerDocument = this.ownerDocument;
+    this.childNodes.push(child);
+
+    if (this.isConnected) {
+      child.connect();
+    }
+
+    return child;
+  }
+
+  append(...children: FakeElement[]) {
+    children.forEach((child) => this.appendChild(child));
+  }
+
+  replaceChildren(...children: FakeElement[]) {
+    this.childNodes.forEach((child) => {
+      child.parentElement = null;
+      child.isConnected = false;
+    });
+    this.childNodes = [];
+    this.append(...children);
+  }
+
+  remove() {
+    if (!this.parentElement) {
+      return;
+    }
+
+    const nextChildren = this.parentElement.childNodes.filter((child) => child !== this);
+    this.parentElement.childNodes = nextChildren;
+    this.parentElement = null;
+    this.isConnected = false;
+  }
+
+  connect() {
+    this.isConnected = true;
+    this.childNodes.forEach((child) => child.connect());
+  }
+
+  addEventListener(type: string, listener: Listener) {
+    this.listeners.get(type)?.add(listener) ?? this.listeners.set(type, new Set([listener]));
+  }
+
+  removeEventListener(type: string, listener: Listener) {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: FakeEvent) {
+    event.target ??= this;
+
+    let current: FakeElement | null = this;
+
+    while (current) {
+      event.currentTarget = current;
+      current.listeners.get(event.type)?.forEach((listener) => listener(event));
+
+      if (!event.bubbles) {
+        break;
+      }
+
+      current = current.parentElement;
+    }
+
+    return !event.defaultPrevented;
+  }
+
+  contains(candidate: unknown): candidate is FakeElement {
+    if (!(candidate instanceof FakeElement)) {
+      return false;
+    }
+
+    let current: FakeElement | null = candidate;
+
+    while (current) {
+      if (current === this) {
+        return true;
+      }
+
+      current = current.parentElement;
+    }
+
+    return false;
+  }
+
+  closest(selectorList: string) {
+    const selectors = selectorList.split(",").map((selector) => selector.trim());
+    let current: FakeElement | null = this;
+
+    while (current) {
+      if (selectors.some((selector) => current.matches(selector))) {
+        return current;
+      }
+
+      current = current.parentElement;
+    }
+
+    return null;
+  }
+
+  matches(selector: string) {
+    if (selector === "th") {
+      return this.tagName === "TH";
+    }
+    if (selector === "td") {
+      return this.tagName === "TD";
+    }
+    if (selector === "button") {
+      return this.tagName === "BUTTON";
+    }
+    if (selector === "input") {
+      return this.tagName === "INPUT";
+    }
+    if (selector === "select") {
+      return this.tagName === "SELECT";
+    }
+    if (selector === "textarea") {
+      return this.tagName === "TEXTAREA";
+    }
+    if (selector === "a[href]") {
+      return this.tagName === "A" && this.hasAttribute("href");
+    }
+    if (selector === "[contenteditable='true']") {
+      return this.getAttribute("contenteditable") === "true";
+    }
+    if (selector === "[data-spreadsheet-ignore]" || selector === "[data-table-steroids-ignore]") {
+      return this.hasAttribute(selector.slice(1, -1));
+    }
+
+    return false;
+  }
+
+  setAttribute(name: string, value: string) {
+    this.attributes.set(name, value);
+
+    if (name === "id") {
+      this.id = value;
+    }
+  }
+
+  getAttribute(name: string) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  hasAttribute(name: string) {
+    return this.attributes.has(name);
+  }
+
+  removeAttribute(name: string) {
+    this.attributes.delete(name);
+
+    if (name === "id") {
+      this.id = "";
+    }
+  }
+
+  focus() {
+    this.ownerDocument.activeElement = this;
+  }
+
+  setBoundingClientRect(rect: Rect) {
+    this.rect = rect;
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
+  }
+}
+
+class FakeHTMLElement extends FakeElement {}
+
+class FakeHTMLTableCellElement extends FakeHTMLElement {
+  rowSpan = 1;
+  colSpan = 1;
+
+  constructor(tagName: string, ownerDocument: FakeDocument) {
+    super(tagName, ownerDocument);
+  }
+}
+
+class FakeHTMLTableRowElement extends FakeHTMLElement {
+  constructor(ownerDocument: FakeDocument) {
+    super("tr", ownerDocument);
+  }
+
+  get cells() {
+    return this.childNodes.filter((child): child is FakeHTMLTableCellElement => child instanceof FakeHTMLTableCellElement);
+  }
+}
+
+class FakeHTMLTableSectionElement extends FakeHTMLElement {
+  constructor(tagName: string, ownerDocument: FakeDocument) {
+    super(tagName, ownerDocument);
+  }
+
+  get rows() {
+    return this.childNodes.filter((child): child is FakeHTMLTableRowElement => child instanceof FakeHTMLTableRowElement);
+  }
+}
+
+class FakeHTMLTableElement extends FakeHTMLElement {
+  setPointerCaptureCalls = 0;
+  releasePointerCaptureCalls = 0;
+  private capturedPointerIds = new Set<number>();
+
+  constructor(ownerDocument: FakeDocument) {
+    super("table", ownerDocument);
+  }
+
+  get rows() {
+    return this.childNodes.flatMap((child) =>
+      child instanceof FakeHTMLTableSectionElement ? child.rows : child instanceof FakeHTMLTableRowElement ? [child] : [],
+    );
+  }
+
+  get tBodies() {
+    return this.childNodes.filter(
+      (child): child is FakeHTMLTableSectionElement => child instanceof FakeHTMLTableSectionElement && child.tagName === "TBODY",
+    );
+  }
+
+  setPointerCapture(pointerId: number) {
+    this.setPointerCaptureCalls += 1;
+    this.capturedPointerIds.add(pointerId);
+  }
+
+  releasePointerCapture(pointerId: number) {
+    this.releasePointerCaptureCalls += 1;
+    this.capturedPointerIds.delete(pointerId);
+  }
+
+  hasPointerCapture(pointerId: number) {
+    return this.capturedPointerIds.has(pointerId);
+  }
+}
+
+class FakeMutationObserver {
+  observe() {}
+  disconnect() {}
+}
+
+class FakeResizeObserver {
+  observe() {}
+  disconnect() {}
+}
+
+function installFakeDom() {
+  const previousGlobals = {
+    document: globalThis.document,
+    window: globalThis.window,
+    Element: globalThis.Element,
+    HTMLElement: globalThis.HTMLElement,
+    HTMLTableElement: globalThis.HTMLTableElement,
+    HTMLTableSectionElement: globalThis.HTMLTableSectionElement,
+    HTMLTableRowElement: globalThis.HTMLTableRowElement,
+    HTMLTableCellElement: globalThis.HTMLTableCellElement,
+    MutationObserver: globalThis.MutationObserver,
+    ResizeObserver: globalThis.ResizeObserver,
+  };
+  const document = new FakeDocument();
+  const window = new FakeWindow();
+
+  Object.assign(globalThis, {
+    document,
+    window,
+    Element: FakeElement,
+    HTMLElement: FakeHTMLElement,
+    HTMLTableElement: FakeHTMLTableElement,
+    HTMLTableSectionElement: FakeHTMLTableSectionElement,
+    HTMLTableRowElement: FakeHTMLTableRowElement,
+    HTMLTableCellElement: FakeHTMLTableCellElement,
+    MutationObserver: FakeMutationObserver,
+    ResizeObserver: FakeResizeObserver,
+  });
+
+  return {
+    document,
+    window,
+    restore() {
+      Object.assign(globalThis, previousGlobals);
+    },
+  };
+}
+
+function createPointerEvent(type: string, init: Record<string, unknown>) {
+  return new FakeEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: 0,
+    isPrimary: true,
+    pointerId: 1,
+    pointerType: "mouse",
+    clientX: 0,
+    clientY: 0,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    ...init,
+  });
+}
+
+function createKeyboardEvent(type: string, init: Record<string, unknown>) {
+  return new FakeEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    key: "",
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...init,
+  });
+}
+
+function getCellCenter(cell: FakeHTMLTableCellElement) {
+  const rect = cell.getBoundingClientRect();
+
+  return {
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2,
+  };
+}
+
+function clickCell(table: FakeHTMLTableElement, cell: FakeHTMLTableCellElement, init: Record<string, unknown> = {}) {
+  const { clientX, clientY } = getCellCenter(cell);
+
+  cell.dispatchEvent(createPointerEvent("pointerdown", { clientX, clientY, ...init }));
+  table.dispatchEvent(createPointerEvent("pointerup", { clientX, clientY, ...init }));
+}
+
+function createTableFixture(document: FakeDocument) {
+  const table = document.createElement("table") as FakeHTMLTableElement;
+  const tbody = document.createElement("tbody") as FakeHTMLTableSectionElement;
+  const row = document.createElement("tr") as FakeHTMLTableRowElement;
+  const firstCell = document.createElement("td") as FakeHTMLTableCellElement;
+  const secondCell = document.createElement("td") as FakeHTMLTableCellElement;
+
+  row.setBoundingClientRect({ left: 0, top: 0, right: 100, bottom: 20, width: 100, height: 20 });
+  firstCell.setBoundingClientRect({ left: 0, top: 0, right: 50, bottom: 20, width: 50, height: 20 });
+  secondCell.setBoundingClientRect({ left: 50, top: 0, right: 100, bottom: 20, width: 50, height: 20 });
+
+  row.append(firstCell, secondCell);
+  tbody.append(row);
+  table.append(tbody);
+  document.body.appendChild(table);
+  document.elementFromPointResolver = (clientX) => (clientX < 50 ? firstCell : secondCell);
+
+  return {
+    table,
+    tbody,
+    row,
+    firstCell,
+    secondCell,
+  };
+}
+
+function createGridTableFixture(document: FakeDocument) {
+  const table = document.createElement("table") as FakeHTMLTableElement;
+  const tbody = document.createElement("tbody") as FakeHTMLTableSectionElement;
+  const firstRow = document.createElement("tr") as FakeHTMLTableRowElement;
+  const secondRow = document.createElement("tr") as FakeHTMLTableRowElement;
+  const topLeft = document.createElement("td") as FakeHTMLTableCellElement;
+  const topRight = document.createElement("td") as FakeHTMLTableCellElement;
+  const bottomLeft = document.createElement("td") as FakeHTMLTableCellElement;
+  const bottomRight = document.createElement("td") as FakeHTMLTableCellElement;
+
+  firstRow.setBoundingClientRect({ left: 0, top: 0, right: 100, bottom: 20, width: 100, height: 20 });
+  secondRow.setBoundingClientRect({ left: 0, top: 20, right: 100, bottom: 40, width: 100, height: 20 });
+  topLeft.setBoundingClientRect({ left: 0, top: 0, right: 50, bottom: 20, width: 50, height: 20 });
+  topRight.setBoundingClientRect({ left: 50, top: 0, right: 100, bottom: 20, width: 50, height: 20 });
+  bottomLeft.setBoundingClientRect({ left: 0, top: 20, right: 50, bottom: 40, width: 50, height: 20 });
+  bottomRight.setBoundingClientRect({ left: 50, top: 20, right: 100, bottom: 40, width: 50, height: 20 });
+
+  firstRow.append(topLeft, topRight);
+  secondRow.append(bottomLeft, bottomRight);
+  tbody.append(firstRow, secondRow);
+  table.append(tbody);
+  document.body.appendChild(table);
+  document.elementFromPointResolver = (clientX, clientY) => {
+    if (clientY < 20) {
+      return clientX < 50 ? topLeft : topRight;
+    }
+
+    return clientX < 50 ? bottomLeft : bottomRight;
+  };
+
+  return {
+    table,
+    cells: {
+      topLeft,
+      topRight,
+      bottomLeft,
+      bottomRight,
+    },
+  };
+}
+
+function createColSpanTableFixture(document: FakeDocument) {
+  const table = document.createElement("table") as FakeHTMLTableElement;
+  const tbody = document.createElement("tbody") as FakeHTMLTableSectionElement;
+  const firstRow = document.createElement("tr") as FakeHTMLTableRowElement;
+  const secondRow = document.createElement("tr") as FakeHTMLTableRowElement;
+  const spanningCell = document.createElement("td") as FakeHTMLTableCellElement;
+  const bottomLeft = document.createElement("td") as FakeHTMLTableCellElement;
+  const bottomRight = document.createElement("td") as FakeHTMLTableCellElement;
+
+  spanningCell.colSpan = 2;
+  firstRow.setBoundingClientRect({ left: 0, top: 0, right: 100, bottom: 20, width: 100, height: 20 });
+  secondRow.setBoundingClientRect({ left: 0, top: 20, right: 100, bottom: 40, width: 100, height: 20 });
+  spanningCell.setBoundingClientRect({ left: 0, top: 0, right: 100, bottom: 20, width: 100, height: 20 });
+  bottomLeft.setBoundingClientRect({ left: 0, top: 20, right: 50, bottom: 40, width: 50, height: 20 });
+  bottomRight.setBoundingClientRect({ left: 50, top: 20, right: 100, bottom: 40, width: 50, height: 20 });
+
+  firstRow.append(spanningCell);
+  secondRow.append(bottomLeft, bottomRight);
+  tbody.append(firstRow, secondRow);
+  table.append(tbody);
+  document.body.appendChild(table);
+
+  return {
+    table,
+    cells: {
+      spanningCell,
+      bottomLeft,
+      bottomRight,
+    },
+  };
+}
+
+test("enhanceTable waits to capture desktop pointer drags until the drag threshold is crossed", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, firstCell } = createTableFixture(document);
+    const handle = enhanceTable(table, { interactionMode: "desktop", observeMutations: false });
+    const pointerDown = createPointerEvent("pointerdown", { clientX: 10, clientY: 10 });
+
+    firstCell.dispatchEvent(pointerDown);
+
+    assert.equal(pointerDown.defaultPrevented, false);
+    assert.equal(table.setPointerCaptureCalls, 0);
+    assert.deepEqual(handle.getActiveSelection(), {
+      start: { rowId: "row-0", columnId: "column-0" },
+      end: { rowId: "row-0", columnId: "column-0" },
+    });
+
+    table.dispatchEvent(createPointerEvent("pointermove", { clientX: 12, clientY: 12 }));
+
+    assert.equal(table.setPointerCaptureCalls, 0);
+
+    table.dispatchEvent(createPointerEvent("pointermove", { clientX: 70, clientY: 10 }));
+
+    assert.equal(table.setPointerCaptureCalls, 1);
+
+    table.dispatchEvent(createPointerEvent("pointerup", { clientX: 70, clientY: 10 }));
+
+    assert.equal(table.releasePointerCaptureCalls, 1);
+    assert.deepEqual(handle.getActiveSelection(), {
+      start: { rowId: "row-0", columnId: "column-0" },
+      end: { rowId: "row-0", columnId: "column-1" },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable ignores descendants marked with data-table-steroids-ignore", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, firstCell } = createTableFixture(document);
+    const ignoredHandle = document.createElement("div") as FakeHTMLElement;
+
+    ignoredHandle.setAttribute("data-table-steroids-ignore", "");
+    firstCell.appendChild(ignoredHandle);
+
+    const handle = enhanceTable(table, { interactionMode: "desktop", observeMutations: false });
+    const pointerDown = createPointerEvent("pointerdown", { clientX: 10, clientY: 10 });
+
+    ignoredHandle.dispatchEvent(pointerDown);
+    table.dispatchEvent(createPointerEvent("pointerup", { clientX: 10, clientY: 10 }));
+
+    assert.equal(pointerDown.defaultPrevented, false);
+    assert.deepEqual(handle.getSelections(), []);
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable only manages tbody cells when selectionScope is tbody", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const table = document.createElement("table") as FakeHTMLTableElement;
+    const thead = document.createElement("thead") as FakeHTMLTableSectionElement;
+    const tbody = document.createElement("tbody") as FakeHTMLTableSectionElement;
+    const headerRow = document.createElement("tr") as FakeHTMLTableRowElement;
+    const bodyRow = document.createElement("tr") as FakeHTMLTableRowElement;
+    const headerCell = document.createElement("th") as FakeHTMLTableCellElement;
+    const bodyCell = document.createElement("td") as FakeHTMLTableCellElement;
+
+    headerRow.appendChild(headerCell);
+    bodyRow.appendChild(bodyCell);
+    thead.appendChild(headerRow);
+    tbody.appendChild(bodyRow);
+    table.append(thead, tbody);
+    document.body.appendChild(table);
+
+    enhanceTable(table, {
+      interactionMode: "desktop",
+      observeMutations: false,
+      selectionScope: "tbody",
+    });
+
+    assert.equal(headerCell.getAttribute("tabindex"), null);
+    assert.equal(headerCell.getAttribute("data-table-steroids-cell"), null);
+    assert.equal(bodyCell.getAttribute("tabindex"), "-1");
+    assert.equal(bodyCell.getAttribute("data-table-steroids-cell"), "true");
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable returns single-cell and rectangular selection snapshots", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, cells } = createGridTableFixture(document);
+    const handle = enhanceTable(table, { interactionMode: "desktop", observeMutations: false });
+
+    clickCell(table, cells.topLeft);
+
+    assert.deepEqual(handle.getSelectionSnapshot(), {
+      selections: [{ start: { rowId: "row-0", columnId: "column-0" }, end: { rowId: "row-0", columnId: "column-0" } }],
+      activeSelection: { start: { rowId: "row-0", columnId: "column-0" }, end: { rowId: "row-0", columnId: "column-0" } },
+      bounds: [{ minRow: 0, maxRow: 0, minColumn: 0, maxColumn: 0 }],
+      selectedCells: [
+        {
+          id: "cell-0-0-0",
+          rowId: "row-0",
+          columnId: "column-0",
+          rowIndex: 0,
+          columnIndex: 0,
+          element: cells.topLeft,
+          aliases: [{ rowId: "row-0", columnId: "column-0" }],
+        },
+      ],
+    });
+
+    clickCell(table, cells.bottomRight, { shiftKey: true });
+
+    assert.deepEqual(handle.getSelectionSnapshot(), {
+      selections: [{ start: { rowId: "row-0", columnId: "column-0" }, end: { rowId: "row-1", columnId: "column-1" } }],
+      activeSelection: { start: { rowId: "row-0", columnId: "column-0" }, end: { rowId: "row-1", columnId: "column-1" } },
+      bounds: [{ minRow: 0, maxRow: 1, minColumn: 0, maxColumn: 1 }],
+      selectedCells: [
+        {
+          id: "cell-0-0-0",
+          rowId: "row-0",
+          columnId: "column-0",
+          rowIndex: 0,
+          columnIndex: 0,
+          element: cells.topLeft,
+          aliases: [{ rowId: "row-0", columnId: "column-0" }],
+        },
+        {
+          id: "cell-0-1-1",
+          rowId: "row-0",
+          columnId: "column-1",
+          rowIndex: 0,
+          columnIndex: 1,
+          element: cells.topRight,
+          aliases: [{ rowId: "row-0", columnId: "column-1" }],
+        },
+        {
+          id: "cell-1-0-0",
+          rowId: "row-1",
+          columnId: "column-0",
+          rowIndex: 1,
+          columnIndex: 0,
+          element: cells.bottomLeft,
+          aliases: [{ rowId: "row-1", columnId: "column-0" }],
+        },
+        {
+          id: "cell-1-1-1",
+          rowId: "row-1",
+          columnId: "column-1",
+          rowIndex: 1,
+          columnIndex: 1,
+          element: cells.bottomRight,
+          aliases: [{ rowId: "row-1", columnId: "column-1" }],
+        },
+      ],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable returns multi-range selection snapshots", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, cells } = createGridTableFixture(document);
+    const handle = enhanceTable(table, { interactionMode: "desktop", observeMutations: false });
+
+    clickCell(table, cells.topLeft);
+    clickCell(table, cells.bottomRight, { ctrlKey: true });
+
+    assert.deepEqual(handle.getSelectionSnapshot(), {
+      selections: [
+        { start: { rowId: "row-0", columnId: "column-0" }, end: { rowId: "row-0", columnId: "column-0" } },
+        { start: { rowId: "row-1", columnId: "column-1" }, end: { rowId: "row-1", columnId: "column-1" } },
+      ],
+      activeSelection: { start: { rowId: "row-1", columnId: "column-1" }, end: { rowId: "row-1", columnId: "column-1" } },
+      bounds: [
+        { minRow: 0, maxRow: 0, minColumn: 0, maxColumn: 0 },
+        { minRow: 1, maxRow: 1, minColumn: 1, maxColumn: 1 },
+      ],
+      selectedCells: [
+        {
+          id: "cell-0-0-0",
+          rowId: "row-0",
+          columnId: "column-0",
+          rowIndex: 0,
+          columnIndex: 0,
+          element: cells.topLeft,
+          aliases: [{ rowId: "row-0", columnId: "column-0" }],
+        },
+        {
+          id: "cell-1-1-1",
+          rowId: "row-1",
+          columnId: "column-1",
+          rowIndex: 1,
+          columnIndex: 1,
+          element: cells.bottomRight,
+          aliases: [{ rowId: "row-1", columnId: "column-1" }],
+        },
+      ],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable selection snapshots preserve rowSpan and colSpan aliases", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, cells } = createColSpanTableFixture(document);
+    const handle = enhanceTable(table, { interactionMode: "desktop", observeMutations: false });
+
+    clickCell(table, cells.spanningCell);
+
+    assert.deepEqual(handle.getSelectionSnapshot(), {
+      selections: [{ start: { rowId: "row-0", columnId: "column-0" }, end: { rowId: "row-0", columnId: "column-0" } }],
+      activeSelection: { start: { rowId: "row-0", columnId: "column-0" }, end: { rowId: "row-0", columnId: "column-0" } },
+      bounds: [{ minRow: 0, maxRow: 0, minColumn: 0, maxColumn: 0 }],
+      selectedCells: [
+        {
+          id: "cell-0-0-0",
+          rowId: "row-0",
+          columnId: "column-0",
+          rowIndex: 0,
+          columnIndex: 0,
+          element: cells.spanningCell,
+          aliases: [
+            { rowId: "row-0", columnId: "column-0" },
+            { rowId: "row-0", columnId: "column-1" },
+          ],
+        },
+      ],
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable plugins run in order and can stop built-in key handling", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, cells } = createGridTableFixture(document);
+    const seen: string[] = [];
+    const handle = enhanceTable(table, {
+      interactionMode: "desktop",
+      observeMutations: false,
+      plugins: [
+        {
+          name: "first",
+          onKeyDown(event) {
+            seen.push(`first:${event.key}`);
+            event.preventDefault();
+            return "handled";
+          },
+        },
+        {
+          name: "second",
+          onKeyDown(event) {
+            seen.push(`second:${event.key}`);
+          },
+        },
+      ],
+    });
+
+    clickCell(table, cells.topLeft);
+    const keyEvent = createKeyboardEvent("keydown", { key: "ArrowRight" });
+
+    cells.topLeft.dispatchEvent(keyEvent);
+
+    assert.equal(keyEvent.defaultPrevented, true);
+    assert.deepEqual(seen, ["first:ArrowRight"]);
+    assert.deepEqual(handle.getActiveSelection(), {
+      start: { rowId: "row-0", columnId: "column-0" },
+      end: { rowId: "row-0", columnId: "column-0" },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable plugins honor ignored descendants for key events", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, cells } = createGridTableFixture(document);
+    const ignoredHandle = document.createElement("div") as FakeHTMLElement;
+    let pluginCalls = 0;
+
+    ignoredHandle.setAttribute("data-table-steroids-ignore", "");
+    cells.topLeft.appendChild(ignoredHandle);
+
+    const handle = enhanceTable(table, {
+      interactionMode: "desktop",
+      observeMutations: false,
+      plugins: [
+        {
+          name: "delete",
+          onKeyDown() {
+            pluginCalls += 1;
+            return "handled";
+          },
+        },
+      ],
+    });
+
+    clickCell(table, cells.topLeft);
+    ignoredHandle.dispatchEvent(createKeyboardEvent("keydown", { key: "Delete" }));
+
+    assert.equal(pluginCalls, 0);
+    assert.deepEqual(handle.getActiveSelection(), {
+      start: { rowId: "row-0", columnId: "column-0" },
+      end: { rowId: "row-0", columnId: "column-0" },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("enhanceTable plugins can implement delete behavior from the current selection snapshot", async () => {
+  const { document, restore } = installFakeDom();
+
+  try {
+    const { enhanceTable } = await import("../dist/dom.js");
+    const { table, cells } = createGridTableFixture(document);
+    const cleared: string[] = [];
+    const handle = enhanceTable(table, {
+      interactionMode: "desktop",
+      observeMutations: false,
+      plugins: [
+        {
+          name: "delete-selection",
+          onKeyDown(event, snapshot, context) {
+            if (event.key !== "Delete" && event.key !== "Backspace") {
+              return;
+            }
+
+            event.preventDefault();
+            cleared.push(...snapshot.selectedCells.map((cell) => `${cell.rowId}:${cell.columnId}`));
+            context.clearSelection();
+            return "handled";
+          },
+        },
+      ],
+    });
+
+    clickCell(table, cells.bottomRight);
+    cells.bottomRight.dispatchEvent(createKeyboardEvent("keydown", { key: "Delete" }));
+
+    assert.equal(cleared.join(","), "row-1:column-1");
+    assert.deepEqual(handle.getSelections(), []);
+  } finally {
+    restore();
+  }
+});

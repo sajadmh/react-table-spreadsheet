@@ -24,11 +24,16 @@ export const TableSteroids = React.forwardRef<HTMLTableElement, TableSteroidsPro
     {
       allowCellSelection = true,
       allowRangeSelection = true,
+      activationMode,
       observeMutations = true,
       onSelectionCopy,
       onSelectionChange,
       getCellText,
+      selectionScope,
+      isSelectableCell,
+      shouldIgnoreEvent,
       overlay,
+      plugins,
       ...tableProps
     },
     forwardedRef,
@@ -45,17 +50,35 @@ export const TableSteroids = React.forwardRef<HTMLTableElement, TableSteroidsPro
       const handle = enhanceTable(table, {
         allowCellSelection,
         allowRangeSelection,
+        activationMode,
         observeMutations,
         onSelectionCopy,
         onSelectionChange,
         getCellText,
+        selectionScope,
+        isSelectableCell,
+        shouldIgnoreEvent,
         overlay,
+        plugins,
       });
 
       return () => {
         handle.destroy();
       };
-    }, [allowCellSelection, allowRangeSelection, getCellText, observeMutations, onSelectionChange, onSelectionCopy, overlay]);
+    }, [
+      activationMode,
+      allowCellSelection,
+      allowRangeSelection,
+      getCellText,
+      isSelectableCell,
+      observeMutations,
+      onSelectionChange,
+      onSelectionCopy,
+      overlay,
+      plugins,
+      selectionScope,
+      shouldIgnoreEvent,
+    ]);
 
     return React.createElement("table", {
       ...tableProps,

@@ -18,9 +18,18 @@ import {
   type TableSpreadsheetInteractionMode,
 } from "./interaction-mode.js";
 import { SelectionOverlay, type OverlayRect, type SpreadsheetOverlayTheme } from "./overlay.js";
-import { buildDOMTableModel, getCoordinateKey, type DOMTableCell, type DOMTableModel } from "./table-model.js";
+import {
+  buildDOMTableModel,
+  getCoordinateKey,
+  type BuildDOMTableModelOptions,
+  type DOMTableCell,
+  type DOMTableModel,
+  type DOMTableSelectionScope,
+} from "./table-model.js";
 
 type DragMode = "replace" | "add" | "subtract";
+export type TableSpreadsheetActivationMode = "pointerdown" | "click";
+export type TableSpreadsheetIgnorePhase = "copy" | "keydown" | "pointerdown" | "pointermove";
 
 const IGNORE_INTERACTIVE_SELECTOR = [
   "a[href]",
@@ -30,7 +39,9 @@ const IGNORE_INTERACTIVE_SELECTOR = [
   "textarea",
   "[contenteditable='true']",
   "[data-spreadsheet-ignore]",
+  "[data-table-steroids-ignore]",
 ].join(",");
+const DEFAULT_DRAG_ACTIVATION_THRESHOLD = 5;
 
 interface EnhancedTableElement extends HTMLTableElement {
   __nativeSpreadsheetHandle__?: TableSpreadsheetHandle;
@@ -46,19 +57,65 @@ interface DragState {
   lastHoveredCoordinateKey: string;
 }
 
+interface PendingPressState {
+  pointerId: number;
+  pointerType: string;
+  anchor: CellCoordinates;
+  selection: Selection;
+  mode: DragMode;
+  baseSelections: Selection[];
+  clientX: number;
+  clientY: number;
+  selectionCommitted: boolean;
+}
+
 const MANAGED_CELL_ATTRIBUTE = "data-table-steroids-cell";
 const MANAGED_CELL_STYLE_ID = "table-steroids-cell-style";
 const MANAGED_TABLE_ATTRIBUTE = "data-table-steroids";
+
+export interface TableSpreadsheetIgnoreContext {
+  event: Event;
+  cell: DOMTableCell | null;
+  phase: TableSpreadsheetIgnorePhase;
+}
 
 export interface TableSpreadsheetOptions {
   allowCellSelection?: boolean;
   allowRangeSelection?: boolean;
   interactionMode?: TableSpreadsheetInteractionMode;
+  activationMode?: TableSpreadsheetActivationMode;
   observeMutations?: boolean;
   onSelectionChange?: (selections: Selection[], activeSelection: Selection | null) => void;
   onSelectionCopy?: (text: string, selections: Selection[]) => void;
   getCellText?: (cell: HTMLTableCellElement) => string;
+  selectionScope?: DOMTableSelectionScope;
+  isSelectableCell?: BuildDOMTableModelOptions["isSelectableCell"];
+  shouldIgnoreEvent?: (context: TableSpreadsheetIgnoreContext) => boolean;
   overlay?: Partial<SpreadsheetOverlayTheme>;
+  plugins?: TableSpreadsheetPlugin[];
+}
+
+export interface TableSelectionSnapshot {
+  selections: Selection[];
+  activeSelection: Selection | null;
+  bounds: SelectionBounds[];
+  selectedCells: DOMTableCell[];
+}
+
+export interface TableSpreadsheetPluginContext {
+  table: HTMLTableElement;
+  handle: TableSpreadsheetHandle;
+  getSnapshot(): TableSelectionSnapshot;
+  refresh(): void;
+  clearSelection(): void;
+  copySelection(): Promise<boolean>;
+}
+
+export interface TableSpreadsheetPlugin {
+  name: string;
+  onSetup?: (context: TableSpreadsheetPluginContext) => void | (() => void);
+  onSelectionChange?: (snapshot: TableSelectionSnapshot, context: TableSpreadsheetPluginContext) => void;
+  onKeyDown?: (event: KeyboardEvent, snapshot: TableSelectionSnapshot, context: TableSpreadsheetPluginContext) => "handled" | void;
 }
 
 export interface TableSpreadsheetHandle {
@@ -67,6 +124,7 @@ export interface TableSpreadsheetHandle {
   clearSelection(): void;
   getSelections(): Selection[];
   getActiveSelection(): Selection | null;
+  getSelectionSnapshot(): TableSelectionSnapshot;
   getInteractionMode(): ResolvedTableSpreadsheetInteractionMode;
   copySelection(): Promise<boolean>;
 }
@@ -176,6 +234,18 @@ function shouldIgnoreTarget(target: EventTarget | null, cellElement: HTMLTableCe
 }
 
 /**
+ * Measures how far a pending pointer press has moved from its origin.
+ */
+function getPointerMovementDistance(
+  startClientX: number,
+  startClientY: number,
+  currentClientX: number,
+  currentClientY: number,
+) {
+  return Math.hypot(currentClientX - startClientX, currentClientY - startClientY);
+}
+
+/**
  * Converts a DOM table cell model into selection coordinates.
  */
 function getCellCoordinates(cell: DOMTableCell): CellCoordinates {
@@ -214,6 +284,58 @@ function cloneSelections(selections: Selection[]) {
  */
 function getLastSelection(selections: Selection[]) {
   return selections.length > 0 ? selections[selections.length - 1] : null;
+}
+
+/**
+ * Creates deep copies of a selection bounds list.
+ */
+function cloneSelectionBoundsList(bounds: SelectionBounds[]) {
+  return bounds.map((selectionBounds) => ({ ...selectionBounds }));
+}
+
+/**
+ * Creates a shallow clone of one DOM table cell descriptor.
+ */
+function cloneDOMTableCell(cell: DOMTableCell): DOMTableCell {
+  return {
+    ...cell,
+    aliases: cell.aliases.map((alias) => ({ ...alias })),
+  };
+}
+
+/**
+ * Resolves the current numeric bounds for a selection list.
+ */
+function getSelectionBoundsList(
+  selections: Selection[],
+  rowIndexMap: Record<string, number>,
+  columnIndexMap: Record<string, number>,
+) {
+  return selections
+    .map((selection) => getSelectionBounds(selection, rowIndexMap, columnIndexMap))
+    .filter((selectionBounds): selectionBounds is SelectionBounds => selectionBounds !== null);
+}
+
+/**
+ * Resolves the rendered DOM cells covered by a selection bounds list.
+ */
+function getSelectedDOMTableCells(
+  boundsList: SelectionBounds[],
+  model: DOMTableModel,
+  rowIndexMap: Record<string, number>,
+  columnIndexMap: Record<string, number>,
+) {
+  const selectedCells = new Map<string, DOMTableCell>();
+
+  boundsList.forEach((selectionBounds) => {
+    model.cells.forEach((cell) => {
+      if (cellIntersectsSelectionBounds(cell, selectionBounds, rowIndexMap, columnIndexMap)) {
+        selectedCells.set(cell.id, cell);
+      }
+    });
+  });
+
+  return Array.from(selectedCells.values());
 }
 
 /**
@@ -397,12 +519,19 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
   const allowCellSelection = options.allowCellSelection ?? true;
   const allowRangeSelection = options.allowRangeSelection ?? true;
   const interactionMode = resolveInteractionMode(options.interactionMode);
+  const activationMode = options.activationMode ?? "pointerdown";
   const observeMutations = options.observeMutations ?? true;
+  const plugins = options.plugins ?? [];
   const overlay = new SelectionOverlay(options.overlay);
   const managedCells = new Map<HTMLTableCellElement, string | null>();
   const cellByElement = new WeakMap<HTMLTableCellElement, DOMTableCell>();
+  const modelBuildOptions: BuildDOMTableModelOptions = {
+    getCellText: options.getCellText,
+    selectionScope: options.selectionScope,
+    isSelectableCell: options.isSelectableCell,
+  };
 
-  let model = buildDOMTableModel(table, { getCellText: options.getCellText });
+  let model = buildDOMTableModel(table, modelBuildOptions);
   let rowIndexMap = buildIndexMap(model.rows);
   let columnIndexMap = buildIndexMap(model.columns);
   let selectionRanges: Selection[] = [];
@@ -410,10 +539,12 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
   let copiedSelectionKeys: string[] = [];
   let selectedCell: CellCoordinates | null = null;
   let rangeAnchorCell: CellCoordinates | null = null;
+  let pendingPressState: PendingPressState | null = null;
   let dragState: DragState | null = null;
   let frameId: number | null = null;
   let bodyUserSelectValue: string | null = null;
   const previousTouchAction = table.style.touchAction;
+  let handle!: TableSpreadsheetHandle;
 
   ensureManagedCellStyles();
   table.setAttribute(MANAGED_TABLE_ATTRIBUTE, "true");
@@ -426,7 +557,35 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
    * Emits the current selection state through the external callback.
    */
   const emitSelectionChange = () => {
-    options.onSelectionChange?.(cloneSelections(selectionRanges), activeSelection ? cloneSelection(activeSelection) : null);
+    const selections = cloneSelections(selectionRanges);
+    const nextActiveSelection = activeSelection ? cloneSelection(activeSelection) : null;
+
+    options.onSelectionChange?.(selections, nextActiveSelection);
+
+    if (plugins.length === 0) {
+      return;
+    }
+
+    const snapshot = getSelectionSnapshot();
+
+    plugins.forEach((plugin) => {
+      plugin.onSelectionChange?.(snapshot, pluginContext);
+    });
+  };
+
+  /**
+   * Returns a snapshot of the current selection state and rendered cells.
+   */
+  const getSelectionSnapshot = (): TableSelectionSnapshot => {
+    const bounds = cloneSelectionBoundsList(getSelectionBoundsList(selectionRanges, rowIndexMap, columnIndexMap));
+    const selectedCells = getSelectedDOMTableCells(bounds, model, rowIndexMap, columnIndexMap).map(cloneDOMTableCell);
+
+    return {
+      selections: cloneSelections(selectionRanges),
+      activeSelection: activeSelection ? cloneSelection(activeSelection) : null,
+      bounds,
+      selectedCells,
+    };
   };
 
   /**
@@ -489,6 +648,113 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
     options.onSelectionCopy?.(copyPayload.text, copyPayload.plan.selections);
     copiedSelectionKeys = copyPayload.plan.selections.map((selection) => getSelectionKey(selection));
     scheduleOverlayRender();
+    return true;
+  };
+
+  /**
+   * Checks whether one managed interaction should be ignored.
+   */
+  const shouldIgnoreManagedEvent = (event: Event, cell: DOMTableCell | null, phase: TableSpreadsheetIgnorePhase) => {
+    if (
+      (cell && shouldIgnoreTarget(event.target, cell.element)) ||
+      (!cell && isElement(event.target) && event.target.closest(IGNORE_INTERACTIVE_SELECTOR))
+    ) {
+      return true;
+    }
+
+    return options.shouldIgnoreEvent?.({ event, cell, phase }) ?? false;
+  };
+
+  const pluginContext = {
+    table,
+    get handle() {
+      return handle;
+    },
+    getSnapshot: () => getSelectionSnapshot(),
+    refresh: () => handle.refresh(),
+    clearSelection: () => handle.clearSelection(),
+    copySelection: () => handle.copySelection(),
+  } satisfies TableSpreadsheetPluginContext;
+
+  /**
+   * Gives installed plugins a chance to handle a focused table keydown first.
+   */
+  const dispatchKeyDownPlugins = (event: KeyboardEvent) => {
+    if (plugins.length === 0) {
+      return false;
+    }
+
+    const snapshot = getSelectionSnapshot();
+
+    for (const plugin of plugins) {
+      if (plugin.onKeyDown?.(event, snapshot, pluginContext) === "handled") {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  /**
+   * Applies a pointer-driven selection and returns the cell that should receive focus.
+   */
+  const commitPointerSelection = (selection: Selection, mode: DragMode, baseSelections: Selection[]) => {
+    let focusTarget = selection.end;
+
+    applySelection(selection, mode, baseSelections);
+
+    if (mode === "subtract") {
+      selectedCell = activeSelection?.end ?? null;
+      rangeAnchorCell = selectedCell;
+
+      if (selectedCell) {
+        focusTarget = selectedCell;
+      }
+    } else {
+      selectedCell = selection.end;
+      rangeAnchorCell = selection.start;
+    }
+
+    return focusTarget;
+  };
+
+  /**
+   * Clears any pending desktop press before it becomes a drag or click selection.
+   */
+  const clearPendingPress = () => {
+    pendingPressState = null;
+  };
+
+  /**
+   * Promotes a pending desktop press into an active drag interaction.
+   */
+  const promotePendingPressToDrag = (event: PointerEvent) => {
+    if (!pendingPressState || pendingPressState.pointerId !== event.pointerId || !allowRangeSelection) {
+      return false;
+    }
+
+    if (
+      getPointerMovementDistance(
+        pendingPressState.clientX,
+        pendingPressState.clientY,
+        event.clientX,
+        event.clientY,
+      ) < DEFAULT_DRAG_ACTIVATION_THRESHOLD
+    ) {
+      return false;
+    }
+
+    startDragSelection(
+      pendingPressState.pointerId,
+      pendingPressState.pointerType,
+      pendingPressState.selection,
+      pendingPressState.anchor,
+      pendingPressState.mode,
+      pendingPressState.baseSelections,
+    );
+    event.preventDefault();
+    table.setPointerCapture?.(event.pointerId);
+    clearPendingPress();
     return true;
   };
 
@@ -605,10 +871,11 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
     const selectedCellSnapshot = clearSelection ? null : selectedCell;
     const rangeAnchorSnapshot = clearSelection ? null : rangeAnchorCell;
 
-    model = buildDOMTableModel(table, { getCellText: options.getCellText });
+    model = buildDOMTableModel(table, modelBuildOptions);
     rowIndexMap = buildIndexMap(model.rows);
     columnIndexMap = buildIndexMap(model.columns);
     syncFocusableCells(model);
+    clearPendingPress();
 
     if (clearSelection) {
       selectionRanges = [];
@@ -706,7 +973,11 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
 
     const cell = getEventCell(event.target, table, cellByElement);
 
-    if (!cell || shouldIgnoreTarget(event.target, cell.element)) {
+    if (!cell || shouldIgnoreManagedEvent(event, cell, "keydown")) {
+      return;
+    }
+
+    if (dispatchKeyDownPlugins(event)) {
       return;
     }
 
@@ -782,11 +1053,9 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
 
     const cell = getEventCell(event.target, table, cellByElement);
 
-    if (!cell || shouldIgnoreTarget(event.target, cell.element)) {
+    if (!cell || shouldIgnoreManagedEvent(event, cell, "pointerdown")) {
       return;
     }
-
-    event.preventDefault();
 
     const nextCell = getCellCoordinates(cell);
     const rangeAnchor = rangeAnchorCell ?? selectedCell ?? activeSelection?.end;
@@ -794,18 +1063,38 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
     const allowsDesktopMultiSelect = interactionMode === "desktop";
     const isToggleSelection = allowsDesktopMultiSelect && (event.metaKey || event.ctrlKey);
     const isRangeExtension = allowRangeSelection && allowsDesktopMultiSelect && event.shiftKey && rangeAnchor && !isToggleSelection;
+    const usesPendingDesktopPress = interactionMode === "desktop" && event.pointerType !== "touch";
+
+    clearPendingPress();
 
     if (isRangeExtension && rangeAnchor) {
+      const rangeSelection = createSelection(rangeAnchor, nextCell);
+
+      if (usesPendingDesktopPress) {
+        const selectionCommitted = activationMode === "pointerdown";
+
+        if (selectionCommitted) {
+          commitPointerSelection(rangeSelection, "replace", []);
+        }
+
+        pendingPressState = {
+          pointerId: event.pointerId,
+          pointerType: event.pointerType,
+          anchor: rangeAnchor,
+          selection: rangeSelection,
+          mode: "replace",
+          baseSelections: [],
+          clientX: event.clientX,
+          clientY: event.clientY,
+          selectionCommitted,
+        };
+        return;
+      }
+
+      event.preventDefault();
       selectedCell = nextCell;
       rangeAnchorCell = rangeAnchor;
-      startDragSelection(
-        event.pointerId,
-        event.pointerType,
-        createSelection(rangeAnchor, nextCell),
-        rangeAnchor,
-        "replace",
-        [],
-      );
+      startDragSelection(event.pointerId, event.pointerType, rangeSelection, rangeAnchor, "replace", []);
       table.setPointerCapture?.(event.pointerId);
       return;
     }
@@ -815,10 +1104,33 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
         ? "subtract"
         : "add"
       : "replace";
+    const baseSelections = selectionRanges;
 
+    if (usesPendingDesktopPress) {
+      const selectionCommitted = activationMode === "pointerdown";
+
+      if (selectionCommitted) {
+        commitPointerSelection(nextSelection, mode, baseSelections);
+      }
+
+      pendingPressState = {
+        pointerId: event.pointerId,
+        pointerType: event.pointerType,
+        anchor: nextCell,
+        selection: nextSelection,
+        mode,
+        baseSelections,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        selectionCommitted,
+      };
+      return;
+    }
+
+    event.preventDefault();
     selectedCell = nextCell;
     rangeAnchorCell = nextCell;
-    startDragSelection(event.pointerId, event.pointerType, nextSelection, nextCell, mode, selectionRanges);
+    startDragSelection(event.pointerId, event.pointerType, nextSelection, nextCell, mode, baseSelections);
     table.setPointerCapture?.(event.pointerId);
   };
 
@@ -826,13 +1138,19 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
    * Updates the in-progress selection while a pointer drag is active.
    */
   const handleTablePointerMove = (event: PointerEvent) => {
+    if (pendingPressState && pendingPressState.pointerId === event.pointerId) {
+      if (!promotePendingPressToDrag(event)) {
+        return;
+      }
+    }
+
     if (!dragState || dragState.pointerId !== event.pointerId || !allowRangeSelection) {
       return;
     }
 
     const cell = getCellFromPoint(event.clientX, event.clientY, table, cellByElement) ?? getEventCell(event.target, table, cellByElement);
 
-    if (!cell) {
+    if (!cell || shouldIgnoreManagedEvent(event, cell, "pointermove")) {
       return;
     }
 
@@ -863,24 +1181,9 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
       return;
     }
 
-    const committedSelection = dragState.selection;
-    let focusTarget = committedSelection.end;
+    const focusTarget = commitPointerSelection(dragState.selection, dragState.mode, dragState.baseSelections);
 
-    applySelection(committedSelection, dragState.mode, dragState.baseSelections);
-
-    if (dragState.mode === "subtract") {
-      selectedCell = activeSelection?.end ?? null;
-      rangeAnchorCell = selectedCell;
-
-      if (selectedCell) {
-        focusTarget = selectedCell;
-      }
-    } else {
-      selectedCell = committedSelection.end;
-      rangeAnchorCell = committedSelection.start;
-    }
-
-    if (interactionMode === "desktop") {
+    if (interactionMode === "desktop" && focusTarget) {
       focusCell(focusTarget.rowId, focusTarget.columnId);
     }
 
@@ -891,6 +1194,25 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
    * Commits any active pointer selection when the interaction ends.
    */
   const handleTablePointerUp = (event: PointerEvent) => {
+    if (pendingPressState && pendingPressState.pointerId === event.pointerId) {
+      const nextPendingPressState = pendingPressState;
+      const focusTarget = nextPendingPressState.selectionCommitted
+        ? selectedCell ?? nextPendingPressState.selection.end
+        : commitPointerSelection(
+            nextPendingPressState.selection,
+            nextPendingPressState.mode,
+            nextPendingPressState.baseSelections,
+          );
+
+      clearPendingPress();
+
+      if (interactionMode === "desktop" && focusTarget) {
+        focusCell(focusTarget.rowId, focusTarget.columnId);
+      }
+
+      return;
+    }
+
     if (!dragState || dragState.pointerId !== event.pointerId) {
       return;
     }
@@ -910,6 +1232,11 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
    * Cancels any active pointer-driven selection.
    */
   const handleTablePointerCancel = (event: PointerEvent) => {
+    if (pendingPressState && pendingPressState.pointerId === event.pointerId) {
+      clearPendingPress();
+      return;
+    }
+
     if (!dragState || dragState.pointerId !== event.pointerId) {
       return;
     }
@@ -933,11 +1260,17 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
       return;
     }
 
-    if (document.activeElement instanceof HTMLElement && document.activeElement.closest(IGNORE_INTERACTIVE_SELECTOR)) {
+    const cell = getEventCell(event.target, table, cellByElement);
+
+    if (shouldIgnoreManagedEvent(event, cell, "copy")) {
       return;
     }
 
     if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "c") {
+      return;
+    }
+
+    if (dispatchKeyDownPlugins(event)) {
       return;
     }
 
@@ -971,8 +1304,6 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
       : null;
 
   syncFocusableCells(model);
-  emitSelectionChange();
-  scheduleOverlayRender();
 
   table.addEventListener("keydown", handleCellKeyDown);
   table.addEventListener("pointerdown", handleTablePointerDown);
@@ -992,7 +1323,7 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
   });
   resizeObserver?.observe(table);
 
-  const handle: TableSpreadsheetHandle = {
+  handle = {
     /**
      * Removes spreadsheet behavior and restores the table to its original state.
      */
@@ -1012,6 +1343,7 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
       window.removeEventListener("resize", handleDocumentScroll);
       mutationObserver?.disconnect();
       resizeObserver?.disconnect();
+      pluginCleanups.slice().reverse().forEach((cleanup) => cleanup());
       overlay.destroy();
       stopDragSelection(false);
 
@@ -1050,6 +1382,12 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
       return activeSelection ? cloneSelection(activeSelection) : null;
     },
     /**
+     * Returns a snapshot of the current selection state and selected DOM cells.
+     */
+    getSelectionSnapshot() {
+      return getSelectionSnapshot();
+    },
+    /**
      * Returns the resolved interaction mode for this table instance.
      */
     getInteractionMode() {
@@ -1062,6 +1400,13 @@ export function enhanceTable(table: HTMLTableElement, options: TableSpreadsheetO
       return copySelectionsToClipboard(selectionRanges, activeSelection);
     },
   };
+
+  const pluginCleanups = plugins
+    .map((plugin) => plugin.onSetup?.(pluginContext))
+    .filter((cleanup): cleanup is () => void => typeof cleanup === "function");
+
+  emitSelectionChange();
+  scheduleOverlayRender();
 
   enhancedTable.__nativeSpreadsheetHandle__ = handle;
   return handle;

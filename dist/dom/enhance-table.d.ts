@@ -1,15 +1,48 @@
-import type { Selection } from "../core/types.js";
+import type { Selection, SelectionBounds } from "../core/types.js";
 import { type ResolvedTableSpreadsheetInteractionMode, type TableSpreadsheetInteractionMode } from "./interaction-mode.js";
 import { type SpreadsheetOverlayTheme } from "./overlay.js";
+import { type BuildDOMTableModelOptions, type DOMTableCell, type DOMTableSelectionScope } from "./table-model.js";
+export type TableSpreadsheetActivationMode = "pointerdown" | "click";
+export type TableSpreadsheetIgnorePhase = "copy" | "keydown" | "pointerdown" | "pointermove";
+export interface TableSpreadsheetIgnoreContext {
+    event: Event;
+    cell: DOMTableCell | null;
+    phase: TableSpreadsheetIgnorePhase;
+}
 export interface TableSpreadsheetOptions {
     allowCellSelection?: boolean;
     allowRangeSelection?: boolean;
     interactionMode?: TableSpreadsheetInteractionMode;
+    activationMode?: TableSpreadsheetActivationMode;
     observeMutations?: boolean;
     onSelectionChange?: (selections: Selection[], activeSelection: Selection | null) => void;
     onSelectionCopy?: (text: string, selections: Selection[]) => void;
     getCellText?: (cell: HTMLTableCellElement) => string;
+    selectionScope?: DOMTableSelectionScope;
+    isSelectableCell?: BuildDOMTableModelOptions["isSelectableCell"];
+    shouldIgnoreEvent?: (context: TableSpreadsheetIgnoreContext) => boolean;
     overlay?: Partial<SpreadsheetOverlayTheme>;
+    plugins?: TableSpreadsheetPlugin[];
+}
+export interface TableSelectionSnapshot {
+    selections: Selection[];
+    activeSelection: Selection | null;
+    bounds: SelectionBounds[];
+    selectedCells: DOMTableCell[];
+}
+export interface TableSpreadsheetPluginContext {
+    table: HTMLTableElement;
+    handle: TableSpreadsheetHandle;
+    getSnapshot(): TableSelectionSnapshot;
+    refresh(): void;
+    clearSelection(): void;
+    copySelection(): Promise<boolean>;
+}
+export interface TableSpreadsheetPlugin {
+    name: string;
+    onSetup?: (context: TableSpreadsheetPluginContext) => void | (() => void);
+    onSelectionChange?: (snapshot: TableSelectionSnapshot, context: TableSpreadsheetPluginContext) => void;
+    onKeyDown?: (event: KeyboardEvent, snapshot: TableSelectionSnapshot, context: TableSpreadsheetPluginContext) => "handled" | void;
 }
 export interface TableSpreadsheetHandle {
     destroy(): void;
@@ -17,6 +50,7 @@ export interface TableSpreadsheetHandle {
     clearSelection(): void;
     getSelections(): Selection[];
     getActiveSelection(): Selection | null;
+    getSelectionSnapshot(): TableSelectionSnapshot;
     getInteractionMode(): ResolvedTableSpreadsheetInteractionMode;
     copySelection(): Promise<boolean>;
 }

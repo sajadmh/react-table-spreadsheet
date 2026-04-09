@@ -3,7 +3,7 @@ import * as React from "react";
 import { enhanceTable } from "../dom/enhance-table.js";
 export function useReactTableSteroids(tableRef, options = {}) {
     const handleRef = React.useRef(null);
-    const { allowCellSelection = true, allowRangeSelection = true, observeMutations = true, onSelectionCopy, onSelectionChange, getCellText, overlay, } = options;
+    const { allowCellSelection = true, allowRangeSelection = true, activationMode, observeMutations = true, onSelectionCopy, onSelectionChange, getCellText, selectionScope, isSelectableCell, shouldIgnoreEvent, overlay, plugins, } = options;
     React.useEffect(() => {
         const table = tableRef.current;
         if (!table) {
@@ -12,11 +12,16 @@ export function useReactTableSteroids(tableRef, options = {}) {
         const handle = enhanceTable(table, {
             allowCellSelection,
             allowRangeSelection,
+            activationMode,
             observeMutations,
             onSelectionCopy,
             onSelectionChange,
             getCellText,
+            selectionScope,
+            isSelectableCell,
+            shouldIgnoreEvent,
             overlay,
+            plugins,
         });
         handleRef.current = handle;
         return () => {
@@ -25,7 +30,21 @@ export function useReactTableSteroids(tableRef, options = {}) {
                 handleRef.current = null;
             }
         };
-    }, [allowCellSelection, allowRangeSelection, getCellText, observeMutations, onSelectionChange, onSelectionCopy, overlay, tableRef]);
+    }, [
+        activationMode,
+        allowCellSelection,
+        allowRangeSelection,
+        getCellText,
+        isSelectableCell,
+        observeMutations,
+        onSelectionChange,
+        onSelectionCopy,
+        overlay,
+        plugins,
+        selectionScope,
+        shouldIgnoreEvent,
+        tableRef,
+    ]);
     return handleRef;
 }
 //# sourceMappingURL=use-react-table-steroids.js.map

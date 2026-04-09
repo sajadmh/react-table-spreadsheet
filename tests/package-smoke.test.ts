@@ -78,6 +78,31 @@ test("the browser assets are generated during build", async () => {
   assert.match(bookmarkletLoader, /5000/);
 });
 
+test("the published type surfaces expose the plugin API across root and react entries", async () => {
+  const indexTypes = await readFile(new URL("../dist/index.d.ts", import.meta.url), "utf8");
+  const domEnhancerTypes = await readFile(new URL("../dist/dom/enhance-table.d.ts", import.meta.url), "utf8");
+  const reactTypes = await readFile(new URL("../dist/react.d.ts", import.meta.url), "utf8");
+  const reactHookTypes = await readFile(new URL("../dist/react/use-react-table-steroids.d.ts", import.meta.url), "utf8");
+  const reactWrapperTypes = await readFile(new URL("../dist/react/react-table-steroids.d.ts", import.meta.url), "utf8");
+
+  assert.match(indexTypes, /type TableSelectionSnapshot/);
+  assert.match(indexTypes, /type TableSpreadsheetPlugin/);
+  assert.match(indexTypes, /type TableSpreadsheetPluginContext/);
+  assert.match(domEnhancerTypes, /getSelectionSnapshot\(\): TableSelectionSnapshot;/);
+  assert.match(reactTypes, /TableSpreadsheetPlugin/);
+  assert.match(reactTypes, /TableSelectionSnapshot/);
+  assert.match(reactHookTypes, /options\?: TableSpreadsheetOptions/);
+  assert.match(reactWrapperTypes, /TableSpreadsheetOptions/);
+});
+
+test("the built react entry forwards plugin options through the hook and wrapper", async () => {
+  const hookBundle = await readFile(new URL("../dist/react/use-react-table-steroids.js", import.meta.url), "utf8");
+  const wrapperBundle = await readFile(new URL("../dist/react/react-table-steroids.js", import.meta.url), "utf8");
+
+  assert.match(hookBundle, /plugins,/);
+  assert.match(wrapperBundle, /plugins,/);
+});
+
 test("npm pack excludes bookmarklet text assets while keeping the loader", async () => {
   const npmCacheDir = await mkdtemp(`${tmpdir()}/table-steroids-npm-cache-`);
   const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
